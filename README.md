@@ -52,8 +52,8 @@ TBD
 ## Command line parameters
 
 - `concurrency`: the number of concurrenct batch workers, default is 8.
-- `endpoint`: Inference gateway endppoint. Batch requests will be sent to this endpoint.
-- `inferenceObjective`: InferenceObjective to use for requests (set as the HTTP header x-gateway-inference-objective if not empty). 
+- `inference-gateway`: Inference gateway endppoint. Requests will be sent to this endpoint.
+- `inference-objective`: InferenceObjective to use for requests (set as the HTTP header x-gateway-inference-objective if not empty). 
 - `request-merge-policy`: Currently only supporting <u>random-robin</u> policy.
 - `message-queue-impl`: Currently only supporting <u>redis-pubsub</u> for ephemeral Redis-based implementation.
 
