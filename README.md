@@ -1,4 +1,154 @@
-The Async Processor is a composable component for supporting latency-tolerant, asynchronous inference workloads.
+#[WIP] MIGRATION FROM LLM-D/INFERENCE_SCHEDULER IN PROGRESS.......................
+-----
+
+# Async Processor (AP) - User Guide
+
+## Overview
+**The Problem:** High-performance accelerators often suffer from low utilization in strictly online serving scenarios, or users may need to mix latency-insensitive workloads into slack capacity without impacting primary online serving.
+
+**The Value:** This component enables efficient processing of requests where latency is not the primary constraint (i.e., the magnitude of the required SLO is ≥ minutes). <br>
+By utilizing an asynchronous, queue-based approach, users can perform tasks such as product classification, bulk summarizations, summarizing forum discussion threads, or performing near-realtime sentiment analysis over large groups of social media tweets without blocking real-time traffic.
+
+**Architecture Summary:** The Async Processor is a composable component that provides services for managing these requests. It functions as an asynchronous worker that pulls jobs from a message queue and dispatches them to an inference gateway, decoupling job submission from immediate execution.
+
+## When to Use
+• **Latency Insensitivity:** Suitable for workloads where immediate response is not required.
+
+• **Capacity Optimization:** Useful for filling "slack" capacity in your inference pool.
 
 
-Initial Commit in progress....
+## Design Principles
+
+The architecture adheres to the following core principles:
+
+1. **Bring Your Own Queue (BYOQ):** All aspects of prioritization, routing, retries, and scaling are decoupled from the message queue implementation. 
+
+2. **Composability:** The end-user does not interact directly with the processor via an API. Instead, the processor interacts solely with the message queues, making it highly composable with offline batch processing.
+
+3. **Resilience by Design:** If real-time traffic spikes or errors occur, the system triggers intelligent retries for jobs, ensuring they eventually complete without manual intervention.
+
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Motivation](#motivation)
+- [Deployment](#deployment)
+- [Command line parameters](#command-line-parameters)
+- [Request Messages and Consusmption](#request-messages-and-consomption)
+    - [Request Merge Policy](#request-merge-policy)
+- [Retries](#retries)
+- [Results](#results)   
+- [Implementations](#implementations)
+    - [Redis Channels](#redis-channels)
+      - [Redis Command line parameters](#redis-command-line-parameters)
+    - [GCP Pub/Sub](#gcp-pub-sub)
+- [Development](#development)
+
+
+## Deployment
+
+TBD
+
+## Command line parameters
+
+- `concurrency`: the number of concurrenct batch workers, default is 8.
+- `endpoint`: Inference gateway endppoint. Batch requests will be sent to this endpoint.
+- `inferenceObjective`: InferenceObjective to use for requests (set as the HTTP header x-gateway-inference-objective if not empty). 
+- `request-merge-policy`: Currently only supporting <u>random-robin</u> policy.
+- `message-queue-impl`: Currently only supporting <u>redis-pubsub</u> for ephemeral Redis-based implementation.
+
+<i>additional parameters may be specified for concrete message queue implementations</i>
+
+
+## Request Messages and Consusmption
+
+The batch processor expects request messages to have the following format:
+```json
+{
+    "id" : "unique identifier for result mapping",
+    "deadline" : "deadline in Unix seconds",
+    "payload" : {regular inference payload}
+}
+```
+
+Example:
+```json
+{
+    "id" : "19933123533434",
+    "deadline" : "1764045130",
+    "payload": {"model":"food-review","prompt":"hi", "max_tokens":10,"temperature":0}
+}
+```
+
+### Request Merge Policy
+
+The Batch Processor supports multiple request message queues. A `Request Merge Policy` can be specified to define the merge strategy of messages from the different queues.
+
+Currently the only policy supported is `Random Robin Policy` which randomly picks messages from the queues.
+
+
+
+
+## Retries
+
+When a message processing has failed, either shedded or due to a server-side error, it will be scheduled for a retry (assuming the deadline has not passed).
+
+The batch processor supports exponential-backoff and fixed-rate backoff (TBD).
+
+## Results
+
+Results will be written to the results queue and will have the following structure:
+
+```json
+{
+    "id" : "id mapped to the request",
+    "payload" : {/*inference payload*/} ,
+    // or
+    "error" : "error's reason"
+}
+```
+
+## Implementations
+
+### Redis Channels
+
+An example implementation based on Redis channels is provided.
+
+- Redis Channels as the request queues.
+- Redis Sorted Set as the retry exponential backoff implementation.
+- Redis Channel as the result queue.
+
+
+![Batch Processor - Redis architecture](/docs/images/batch_processor_redis_architecture.png "BP - Redis")
+
+#### Redis Command line parameters
+
+- `redis.request-queue-name`: The name of the channel for the requests. Default is <u>batch-queue</u>.
+- `redis.retry-queue-name`: The name of the channel for the retries. Default is <u>batch-sortedset-retry</u>.
+- `redis.result-queue-name`: The name of the channel for the results. Default is <u>batch-queue-result</u>.
+
+
+### GCP Pub/Sub
+
+TBD
+
+## Development
+
+You can set the KIND environment with batch processor deployed with:
+```bash
+export BATCH_REDIS_ENABLED=true
+make env-dev-kind
+```
+
+This will deploy a Redis server as the message queue.
+
+Then, in a new terminal window register a subscriber:
+
+```bash
+kubectl exec `kubectl get pods -l app=redis -o=jsonpath='{.items[0].metadata.name}'` -- /usr/local/bin/redis-cli SUBSCRIBE batch-queue-result
+```
+
+Publish a message for batch processing:
+```bash
+kubectl exec `kubectl get pods -l app=redis -o=jsonpath='{.items[0].metadata.name}'` -- /usr/local/bin/redis-cli PUBLISH batch-queue '{"id" : "testmsg", "payload":{ "model":"food-review", "prompt":"hi"}, "deadline" :"9999999999" }'
+```

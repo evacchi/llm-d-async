@@ -38,8 +38,8 @@ func main() {
 	flag.BoolVar(&metricsEndpointAuth, "metrics-endpoint-auth", true, "Enables authentication and authorization of the metrics endpoint")
 
 	flag.IntVar(&concurrency, "concurrency", 8, "number of concurrent workers")
-	// TODO: rename to "inference gateway"?
-	endpoint := flag.String("endpoint", "http://localhost:30080/v1/completions", "inference endpoint")
+
+	inferenceGateway := flag.String("inference-gateway", "http://localhost:30080/v1/completions", "inference gateway endpoint")
 	inferenceObjective := flag.String("inference-objective", "", "inference objective to use in requests")
 	flag.StringVar(&requestMergePolicy, "request-merge-policy", "random-robin", "The request merge policy to use. Supported policies: random-robin")
 	flag.StringVar(&messageQueueImpl, "message-queue-impl", "redis-pubsub", "The message queue implementation to use. Supported implementations: redis-pubsub")
@@ -108,7 +108,7 @@ func main() {
 
 	requestChannel := policy.MergeRequestChannels(impl.RequestChannels()).Channel
 	for w := 1; w <= concurrency; w++ {
-		go api.Worker(ctx, *endpoint, *inferenceObjective, httpClient, requestChannel, impl.RetryChannel(), impl.ResultChannel())
+		go api.Worker(ctx, *inferenceGateway, *inferenceObjective, httpClient, requestChannel, impl.RetryChannel(), impl.ResultChannel())
 	}
 
 	impl.Start(ctx)
