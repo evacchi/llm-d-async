@@ -99,7 +99,7 @@ func resultWorker(ctx context.Context, rdb *redis.Client, resultChannel chan api
 	}
 }
 
-// pulls from Redis Queue and put in the request channel
+// pulls from Redis channel and put in the request channel
 func requestWorker(ctx context.Context, rdb *redis.Client, msgChannel chan api.RequestMessage, queueName string) {
 	logger := log.FromContext(ctx)
 	sub := rdb.Subscribe(ctx, queueName)

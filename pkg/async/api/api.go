@@ -15,7 +15,6 @@ type Flow interface {
 	ResultChannel() chan ResultMessage
 }
 
-// TODO: how to handle retries here?
 type RequestMergePolicy interface {
 	MergeRequestChannels(channels []RequestChannel) EmbelishedRequestChannel
 }
@@ -49,6 +48,7 @@ type RetryMessage struct {
 	EmbelishedRequestMessage
 	BackoffDurationSeconds float64
 }
+
 type ResultMessage struct {
 	Id      string         `json:"id"`
 	Payload map[string]any `json:"payload"`

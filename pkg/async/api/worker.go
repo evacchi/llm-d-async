@@ -129,15 +129,7 @@ func retryMessage(msg EmbelishedRequestMessage, retryChannel chan RetryMessage, 
 		resultChannel <- CreateDeadlineExceededResultMessage(msg.Id)
 	} else {
 		msg.RetryCount++
-		backoffDurationSeconds := math.Min(
-			float64(baseDelaySeconds)*(math.Pow(2, float64(msg.RetryCount))),
-			float64(secondsToDeadline))
-
-		jitter := rand.Float64() - 0.5
-		finalDuration := backoffDurationSeconds + jitter
-		if finalDuration < 0 {
-			finalDuration = 0
-		}
+		finalDuration := expBackoffDuration(msg.RetryCount, int(secondsToDeadline))
 		metrics.Retries.Inc()
 		retryChannel <- RetryMessage{
 			EmbelishedRequestMessage: msg,
@@ -156,4 +148,17 @@ func CreateErrorResultMessage(id string, errMsg string) ResultMessage {
 
 func CreateDeadlineExceededResultMessage(id string) ResultMessage {
 	return CreateErrorResultMessage(id, "deadline exceeded")
+}
+
+func expBackoffDuration(retryCount int, secondsToDeadline int) float64 {
+	backoffDurationSeconds := math.Min(
+		float64(baseDelaySeconds)*(math.Pow(2, float64(retryCount))),
+		float64(secondsToDeadline))
+
+	jitter := rand.Float64() - 0.5
+	finalDuration := backoffDurationSeconds + jitter
+	if finalDuration < 0 {
+		finalDuration = 0
+	}
+	return finalDuration
 }
