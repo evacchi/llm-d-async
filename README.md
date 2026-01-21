@@ -147,3 +147,8 @@ Publish a message for batch processing:
 ```bash
 kubectl exec -n redis redis-master-0 -- redis-cli PUBLISH request-queue '{"id" : "testmsg", "payload":{ "model":"unsloth/Meta-Llama-3.1-8B", "prompt":"hi"}, "deadline" :"9999999999" }'
 ```
+
+
+
+
+<!-- #   kubectl run --rm -i -t publishmsg --image=redis --restart=Never -- /usr/local/bin/redis-cli -h 10.197.118.35 PUBLISH request-queue '{"id" : "testmsg", "payload":{ "model":"food-review-1", "prompt":"whos on first?"}, "deadline" :"23472348233323" }'-->

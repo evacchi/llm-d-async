@@ -39,8 +39,6 @@ func main() {
 
 	flag.IntVar(&concurrency, "concurrency", 8, "number of concurrent workers")
 
-	inferenceGateway := flag.String("inference-gateway", "http://localhost:30080/v1/completions", "inference gateway endpoint")
-	inferenceObjective := flag.String("inference-objective", "", "inference objective to use in requests")
 	flag.StringVar(&requestMergePolicy, "request-merge-policy", "random-robin", "The request merge policy to use. Supported policies: random-robin")
 	flag.StringVar(&messageQueueImpl, "message-queue-impl", "redis-pubsub", "The message queue implementation to use. Supported implementations: redis-pubsub")
 
@@ -83,7 +81,7 @@ func main() {
 	restConfig := ctrl.GetConfigOrDie()
 	httpClient := http.DefaultClient
 
-	msrv, _ := metricsserver.NewServer(metricsServerOptions, restConfig, httpClient /* TODO: not sure about using the same one*/)
+	msrv, _ := metricsserver.NewServer(metricsServerOptions, restConfig, httpClient)
 	go msrv.Start(ctx) // nolint:errcheck
 
 	/////
@@ -108,7 +106,7 @@ func main() {
 
 	requestChannel := policy.MergeRequestChannels(impl.RequestChannels()).Channel
 	for w := 1; w <= concurrency; w++ {
-		go api.Worker(ctx, *inferenceGateway, *inferenceObjective, httpClient, requestChannel, impl.RetryChannel(), impl.ResultChannel())
+		go api.Worker(ctx, httpClient, requestChannel, impl.RetryChannel(), impl.ResultChannel())
 	}
 
 	impl.Start(ctx)

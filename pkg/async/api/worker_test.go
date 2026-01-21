@@ -11,10 +11,15 @@ import (
 func TestRetryMessage_deadlinePassed(t *testing.T) {
 	retryChannel := make(chan RetryMessage, 1)
 	resultChannel := make(chan ResultMessage, 1)
-	msg := RequestMessage{
-		Id:              "123",
-		RetryCount:      0,
-		DeadlineUnixSec: fmt.Sprintf("%d", time.Now().Add(time.Second*-10).Unix()),
+	msg := EmbelishedRequestMessage{
+		RequestMessage: RequestMessage{
+			Id:              "123",
+			RetryCount:      0,
+			DeadlineUnixSec: fmt.Sprintf("%d", time.Now().Add(time.Second*-10).Unix()),
+		},
+		OrgChannel:         make(chan RequestMessage, 1),
+		InferenceObjective: "",
+		InferenceGateway:   "",
 	}
 	retryMessage(msg, retryChannel, resultChannel)
 	if len(retryChannel) > 0 {
@@ -36,10 +41,15 @@ func TestRetryMessage_deadlinePassed(t *testing.T) {
 func TestRetryMessage_retry(t *testing.T) {
 	retryChannel := make(chan RetryMessage, 1)
 	resultChannel := make(chan ResultMessage, 1)
-	msg := RequestMessage{
-		Id:              "123",
-		RetryCount:      0,
-		DeadlineUnixSec: fmt.Sprintf("%d", time.Now().Add(time.Second*10).Unix()),
+	msg := EmbelishedRequestMessage{
+		RequestMessage: RequestMessage{
+			Id:              "123",
+			RetryCount:      0,
+			DeadlineUnixSec: fmt.Sprintf("%d", time.Now().Add(time.Second*10).Unix()),
+		},
+		OrgChannel:         make(chan RequestMessage, 1),
+		InferenceObjective: "",
+		InferenceGateway:   "",
 	}
 	retryMessage(msg, retryChannel, resultChannel)
 	if len(resultChannel) > 0 {
@@ -81,19 +91,24 @@ func TestSheddedRequest(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})
-	requestChannel := make(chan RequestMessage, 1)
+	requestChannel := make(chan EmbelishedRequestMessage, 1)
 	retryChannel := make(chan RetryMessage, 1)
 	resultChannel := make(chan ResultMessage, 1)
 	ctx := context.Background()
 
-	go Worker(ctx, "http://localhost:30080/v1/completions", "", httpclient, requestChannel, retryChannel, resultChannel)
+	go Worker(ctx, httpclient, requestChannel, retryChannel, resultChannel)
 	deadline := time.Now().Add(time.Second * 100).Unix()
 
-	requestChannel <- RequestMessage{
-		Id:              msgId,
-		RetryCount:      0,
-		DeadlineUnixSec: fmt.Sprintf(("%d"), deadline),
-		Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+	requestChannel <- EmbelishedRequestMessage{
+		RequestMessage: RequestMessage{
+			Id:              msgId,
+			RetryCount:      0,
+			DeadlineUnixSec: fmt.Sprintf(("%d"), deadline),
+			Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+		},
+		OrgChannel:         make(chan RequestMessage),
+		InferenceGateway:   "http://localhost:30080/v1/completions",
+		InferenceObjective: "",
 	}
 
 	select {
@@ -116,20 +131,25 @@ func TestSuccessfulRequest(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})
-	requestChannel := make(chan RequestMessage, 1)
+	requestChannel := make(chan EmbelishedRequestMessage, 1)
 	retryChannel := make(chan RetryMessage, 1)
 	resultChannel := make(chan ResultMessage, 1)
 	ctx := context.Background()
 
-	go Worker(ctx, "http://localhost:30080/v1/completions", "", httpclient, requestChannel, retryChannel, resultChannel)
+	go Worker(ctx, httpclient, requestChannel, retryChannel, resultChannel)
 
 	deadline := time.Now().Add(time.Second * 100).Unix()
 
-	requestChannel <- RequestMessage{
-		Id:              msgId,
-		RetryCount:      0,
-		DeadlineUnixSec: fmt.Sprintf(("%d"), deadline),
-		Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+	requestChannel <- EmbelishedRequestMessage{
+		RequestMessage: RequestMessage{
+			Id:              msgId,
+			RetryCount:      0,
+			DeadlineUnixSec: fmt.Sprintf(("%d"), deadline),
+			Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+		},
+		OrgChannel:         make(chan RequestMessage),
+		InferenceGateway:   "http://localhost:30080/v1/completions",
+		InferenceObjective: "",
 	}
 
 	select {

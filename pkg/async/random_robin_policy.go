@@ -13,8 +13,8 @@ func NewRandomRobinPolicy() api.RequestMergePolicy {
 type RandomRobinPolicy struct {
 }
 
-func (r *RandomRobinPolicy) MergeRequestChannels(channels []api.RequestChannel) api.RequestChannel {
-	mergedChannel := make(chan api.RequestMessage)
+func (r *RandomRobinPolicy) MergeRequestChannels(channels []api.RequestChannel) api.EmbelishedRequestChannel {
+	mergedChannel := make(chan api.EmbelishedRequestMessage)
 
 	cases := make([]reflect.SelectCase, len(channels)) //nolint:staticcheck
 	for i, ch := range channels {
@@ -38,14 +38,19 @@ func (r *RandomRobinPolicy) MergeRequestChannels(channels []api.RequestChannel) 
 					break
 				}
 			} else {
-				mergedChannel <- val.Interface().(api.RequestMessage)
+				rm := val.Interface().(api.RequestMessage)
+				mergedChannel <- api.EmbelishedRequestMessage{
+					RequestMessage:     rm,
+					OrgChannel:         channels[i1].Channel,
+					InferenceObjective: channels[i1].Metadata["inference-objective"].(string),
+					InferenceGateway:   channels[i1].Metadata["inference-gateway"].(string),
+				}
 			}
 
 		}
 	}()
 
-	return api.RequestChannel{
-		Channel:  mergedChannel,
-		Metadata: map[string]any{},
+	return api.EmbelishedRequestChannel{
+		Channel: mergedChannel,
 	}
 }

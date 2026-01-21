@@ -68,8 +68,6 @@ INSTALL_GATEWAY_CTRLPLANE="${INSTALL_GATEWAY_CTRLPLANE:-false}"
 DEFAULT_MODEL_ID=${DEFAULT_MODEL_ID:-"Qwen/Qwen3-0.6B"}
 MODEL_ID=${MODEL_ID:-"unsloth/Meta-Llama-3.1-8B"}
 ACCELERATOR_TYPE=${ACCELERATOR_TYPE:-"H100"}
-SLO_TPOT=${SLO_TPOT:-10}  # Target time-per-output-token SLO (in ms)
-SLO_TTFT=${SLO_TTFT:-1000}  # Target time-to-first-token SLO (in ms)
 
 # Prometheus Configuration
 PROM_CA_CERT_PATH=${PROM_CA_CERT_PATH:-"/tmp/prometheus-ca.crt"}
@@ -133,7 +131,6 @@ Options:
 
 Environment Variables:
   IMG                          Container image to use for the AP (alternative to -i flag)
-  HF_TOKEN                     HuggingFace token for model access (required for llm-d deployment)
   AP_RELEASE_NAME              Helm release name for AP (alternative to -r flag)
   INSTALL_GATEWAY_CTRLPLANE    Install Gateway control plane (default: prompt user, can be set to "true"/"false")
   DEPLOY_PROMETHEUS            Deploy Prometheus stack (default: true)
@@ -441,23 +438,6 @@ deploy_llm_d_infrastructure() {
         log_warning "$LLM_D_PROJECT directory already exists, skipping clone"
     fi
     
-    # Check for HF_TOKEN (use dummy for emulated deployments)
-    if [ -z "$HF_TOKEN" ]; then
-        if ! containsElement "$ENVIRONMENT" "${NON_EMULATED_ENV_LIST[@]}"; then
-            log_warning "HF_TOKEN not set - using dummy token for emulated deployment"
-            export HF_TOKEN="dummy-token"
-        else 
-            log_error "HF_TOKEN is required for non-emulated deployments. Please set HF_TOKEN and try again."
-        fi
-    fi
-    
-    # Create HF token secret
-    log_info "Creating HuggingFace token secret"
-    kubectl create secret generic llm-d-hf-token \
-        --from-literal="HF_TOKEN=${HF_TOKEN}" \
-        --namespace "${LLMD_NS}" \
-        --dry-run=client -o yaml | kubectl apply -f -
-    
     # Install dependencies
     log_info "Installing llm-d dependencies"
     bash $CLIENT_PREREQ_DIR/install-deps.sh
@@ -602,8 +582,6 @@ print_summary() {
     echo "Model:                  $MODEL_ID"
     echo "Accelerator:            $ACCELERATOR_TYPE"
     echo "AP Image:               $AP_IMAGE_REPO:$AP_IMAGE_TAG"
-    echo "SLO (TPOT):             $SLO_TPOT ms"
-    echo "SLO (TTFT):             $SLO_TTFT ms"
     echo ""
     echo "Deployed Components:"
     echo "===================="
@@ -864,7 +842,7 @@ main() {
             fi
         fi
     else
-        log_error "Environment script not found: $SCRIPT_DIR/$ENVIRONMENT/$ENVIRONMENT.sh"
+        log_error "Environment script not found: $SCRIPT_DIR/$ENVIRONMENT/install.sh"
     fi
 
     # Detect GPU type for non-emulated environments

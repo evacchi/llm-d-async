@@ -17,7 +17,7 @@ type Flow interface {
 
 // TODO: how to handle retries here?
 type RequestMergePolicy interface {
-	MergeRequestChannels(channels []RequestChannel) RequestChannel
+	MergeRequestChannels(channels []RequestChannel) EmbelishedRequestChannel
 }
 
 type RequestMessage struct {
@@ -27,17 +27,28 @@ type RequestMessage struct {
 	Payload         map[string]any `json:"payload"`
 }
 
-// TODO: decide about metadata
 type RequestChannel struct {
-	Channel  chan RequestMessage
+	Channel chan RequestMessage
+	// currently metadata is anything and the queue implementation should make use of it however it likes.
 	Metadata map[string]any
 }
 
-type RetryMessage struct {
-	RequestMessage
-	BackoffDurationSeconds float64
+type EmbelishedRequestChannel struct {
+	Channel chan EmbelishedRequestMessage
 }
 
+type EmbelishedRequestMessage struct {
+	RequestMessage
+	OrgChannel chan RequestMessage
+	// empty for none
+	InferenceObjective string
+	InferenceGateway   string
+}
+
+type RetryMessage struct {
+	EmbelishedRequestMessage
+	BackoffDurationSeconds float64
+}
 type ResultMessage struct {
 	Id      string         `json:"id"`
 	Payload map[string]any `json:"payload"`

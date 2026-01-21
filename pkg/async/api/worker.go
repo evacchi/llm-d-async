@@ -19,7 +19,7 @@ import (
 
 var baseDelaySeconds = 2
 
-func Worker(ctx context.Context, endpoint string, inferenceObjective string, httpClient *http.Client, requestChannel chan RequestMessage,
+func Worker(ctx context.Context, httpClient *http.Client, requestChannel chan EmbelishedRequestMessage,
 	retryChannel chan RetryMessage, resultChannel chan ResultMessage) {
 
 	logger := log.FromContext(ctx)
@@ -33,22 +33,23 @@ func Worker(ctx context.Context, endpoint string, inferenceObjective string, htt
 				// Only count first attempt as a new request.
 				metrics.AsyncReqs.Inc()
 			}
-			payloadBytes := parseAndValidateRequest(resultChannel, msg)
+			payloadBytes := validateAndMarshall(resultChannel, msg.RequestMessage)
 			if payloadBytes == nil {
 				continue
 			}
 
+			// Using a function object for easy boundries for 'return' and 'defer'!
 			sendInferenceRequest := func() {
 				logger.V(logutil.DEBUG).Info("Sending inference request.")
-				request, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(payloadBytes))
+				request, err := http.NewRequestWithContext(ctx, "POST", msg.InferenceGateway, bytes.NewBuffer(payloadBytes))
 				if err != nil {
 					metrics.FailedReqs.Inc()
 					resultChannel <- CreateErrorResultMessage(msg.Id, fmt.Sprintf("Failed to create request to inference: %s", err.Error()))
 					return
 				}
 				request.Header.Set("Content-Type", "application/json")
-				if inferenceObjective != "" {
-					request.Header.Set("x-gateway-inference-objective", inferenceObjective)
+				if msg.InferenceObjective != "" {
+					request.Header.Set("x-gateway-inference-objective", msg.InferenceObjective)
 				}
 
 				result, err := httpClient.Do(request)
@@ -90,7 +91,9 @@ func Worker(ctx context.Context, endpoint string, inferenceObjective string, htt
 		}
 	}
 }
-func parseAndValidateRequest(resultChannel chan ResultMessage, msg RequestMessage) []byte {
+
+// parsing and validating payload. On failure puts an error msg on the result-channel and returns nil
+func validateAndMarshall(resultChannel chan ResultMessage, msg RequestMessage) []byte {
 	deadline, err := strconv.ParseInt(msg.DeadlineUnixSec, 10, 64)
 	if err != nil {
 		metrics.FailedReqs.Inc()
@@ -114,7 +117,7 @@ func parseAndValidateRequest(resultChannel chan ResultMessage, msg RequestMessag
 }
 
 // If it is not after deadline, just publish again.
-func retryMessage(msg RequestMessage, retryChannel chan RetryMessage, resultChannel chan ResultMessage) {
+func retryMessage(msg EmbelishedRequestMessage, retryChannel chan RetryMessage, resultChannel chan ResultMessage) {
 	deadline, err := strconv.ParseInt(msg.DeadlineUnixSec, 10, 64)
 	if err != nil { // Can't really happen because this was already parsed in the past. But we don't care to have this branch.
 		resultChannel <- CreateErrorResultMessage(msg.Id, "Failed to parse deadline. Should be in Unix time")
@@ -137,8 +140,8 @@ func retryMessage(msg RequestMessage, retryChannel chan RetryMessage, resultChan
 		}
 		metrics.Retries.Inc()
 		retryChannel <- RetryMessage{
-			RequestMessage:         msg,
-			BackoffDurationSeconds: finalDuration,
+			EmbelishedRequestMessage: msg,
+			BackoffDurationSeconds:   finalDuration,
 		}
 
 	}

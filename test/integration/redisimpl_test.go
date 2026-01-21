@@ -28,10 +28,15 @@ func TestRedisImpl(t *testing.T) {
 	flow.Start(ctx)
 
 	flow.RetryChannel() <- api.RetryMessage{
-		RequestMessage: api.RequestMessage{
-			Id:              "test-id",
-			DeadlineUnixSec: strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
-			Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+		EmbelishedRequestMessage: api.EmbelishedRequestMessage{
+			RequestMessage: api.RequestMessage{
+				Id:              "test-id",
+				DeadlineUnixSec: strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
+				Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+			},
+			OrgChannel:         make(chan api.RequestMessage),
+			InferenceGateway:   "http://localhost:30080/v1/completions",
+			InferenceObjective: "",
 		},
 		BackoffDurationSeconds: 2,
 	}

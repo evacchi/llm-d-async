@@ -20,6 +20,9 @@ vendor/
 # Kind config file
 kind-config.yaml
 
+# local env file
+.env
+
 # Kubernetes manifests
 gpu.cluster
 

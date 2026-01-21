@@ -1,3 +1,9 @@
+# Local env overrides (if exist)
+-include .env
+export
+
+
+
 # Image URL to use all building/pushing image targets
 IMAGE_TAG_BASE ?= ghcr.io/llm-d
 IMG_TAG ?= latest
@@ -10,7 +16,6 @@ KUBECONFIG ?= $(HOME)/.kube/config
 K8S_VERSION ?= v1.32.0
 
 CONTROLLER_NAMESPACE ?= async-processor-system
-MONITORING_NAMESPACE ?= openshift-user-workload-monitoring
 LLMD_NAMESPACE       ?= llm-d-inference-scheduler
 GATEWAY_NAME         ?= infra-inference-scheduling-inference-gateway-istio
 MODEL_ID             ?= unsloth/Meta-Llama-3.1-8B
@@ -106,7 +111,7 @@ undeploy-ap-emulated-on-kind:
 
 ## Deploy AP on Kubernetes with the specified image.
 .PHONY: deploy-ap-on-k8s
-deploy-ap-on-k8s: manifests kustomize ## Deploy AP on Kubernetes with the specified image.
+deploy-ap-on-k8s: kustomize ## Deploy AP on Kubernetes with the specified image.
 	@echo "Deploying AP on Kubernetes with image: $(IMG)"
 	@echo "Target namespace: $(or $(NAMESPACE),async-processor-system)"
 	NAMESPACE=$(or $(NAMESPACE),async-processor-system) IMG=$(IMG) ENVIRONMENT=kubernetes DEPLOY_LLM_D=$(DEPLOY_LLM_D) ./deploy/install.sh
@@ -131,24 +136,6 @@ test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated 
 	$(eval FOCUS_ARGS := $(if $(FOCUS),-ginkgo.focus="$(FOCUS)",-ginkgo.focus="Saturation Mode"))
 	$(eval SKIP_ARGS := $(if $(SKIP),-ginkgo.skip="$(SKIP)",))
 	export COLLECTOR_V2=1 KUBECONFIG=$(KUBECONFIG) K8S_EXPECTED_VERSION=$(K8S_VERSION) && go test ./test/e2e-saturation-based/ -timeout 30m -v -ginkgo.v $(FOCUS_ARGS) $(SKIP_ARGS)
-
-# E2E tests on OpenShift cluster
-# Supports KUBECONFIG or in-cluster authentication (for self-hosted runners).
-.PHONY: test-e2e-openshift
-test-e2e-openshift: ## Run the e2e tests on OpenShift. Supports KUBECONFIG or in-cluster auth.
-	@echo "Running e2e tests on OpenShift cluster..."
-	$(eval FOCUS_ARGS := $(if $(FOCUS),-ginkgo.focus="$(FOCUS)",))
-	$(eval SKIP_ARGS := $(if $(SKIP),-ginkgo.skip="$(SKIP)",))
-
-	CONTROLLER_NAMESPACE=$(CONTROLLER_NAMESPACE) \
-	MONITORING_NAMESPACE=$(MONITORING_NAMESPACE) \
-	LLMD_NAMESPACE=$(LLMD_NAMESPACE) \
-	GATEWAY_NAME=$(GATEWAY_NAME) \
-	MODEL_ID=$(MODEL_ID) \
-	DEPLOYMENT=$(DEPLOYMENT) \
-	REQUEST_RATE=$(REQUEST_RATE) \
-	NUM_PROMPTS=$(NUM_PROMPTS) \
-	go test ./test/e2e-openshift/ -timeout 30m -v -ginkgo.v $(FOCUS_ARGS) $(SKIP_ARGS)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

@@ -9,4 +9,11 @@ ap:
     port: 8443
     secure: true
 
+  redis:
+  #  host: "redis-master.redis.svc.cluster.local"
+     host: "10.197.118.35"
+     #inferenceGateway: "http://infra-sim-inference-gateway-istio.llm-d-sim.svc.cluster.local:80/v1/completions"
+     inferenceGateway: "http://35.212.203.133:80/v1/completions"
   
+
+

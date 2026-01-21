@@ -19,13 +19,15 @@ import (
 var (
 	redisAddr = flag.String("redis.addr", "localhost:6379", "address of the Redis server")
 
-	// TODO: support multiple request queues with metadata (for policy)
-	requestQueueName = flag.String("redis.request-queue-name", "request-queue", "name of the Redis channel for request messages")
-	retryQueueName   = flag.String("redis.retry-queue-name", "retry-sortedset", "name of the Redis sorted set for retry messages")
-	resultQueueName  = flag.String("redis.result-queue-name", "result-queue", "name of the Redis channel for result messages")
+	// TODO: support multiple request queues with metadata (for policy), maybe 'redis.request-1-inference-gateway' and other request related flags/parameters
+	inferenceGateway   = flag.String("redis.inference-gateway", "http://localhost:30080/v1/completions", "inference gateway endpoint")
+	inferenceObjective = flag.String("redis.inference-objective", "", "inference objective to use in requests")
+	requestQueueName   = flag.String("redis.request-queue-name", "request-queue", "name of the Redis channel for request messages")
+
+	retryQueueName  = flag.String("redis.retry-queue-name", "retry-sortedset", "name of the Redis sorted set for retry messages")
+	resultQueueName = flag.String("redis.result-queue-name", "result-queue", "name of the Redis channel for result messages")
 )
 
-// TODO: think about what to do if Redis is down
 type RedisMQFlow struct {
 	rdb            *redis.Client
 	requestChannel chan api.RequestMessage
@@ -36,14 +38,6 @@ type RedisMQFlow struct {
 func NewRedisMQFlow() *RedisMQFlow {
 	rdb := redis.NewClient(&redis.Options{
 		Addr: *redisAddr,
-
-		// TODO: check specific version of go-redis. might require higher version.
-		// Explicitly disable maintenance notifications
-		// This prevents the client from sending CLIENT MAINT_NOTIFICATIONS ON
-		// import "github.com/redis/go-redis/v9/maintnotifications"
-		// MaintNotificationsConfig: &maintnotifications.Config{
-		// 	Mode: maintnotifications.ModeDisabled,
-		// },
 	})
 	return &RedisMQFlow{
 		rdb:            rdb,
@@ -63,7 +57,13 @@ func (r *RedisMQFlow) Start(ctx context.Context) {
 	go resultWorker(ctx, r.rdb, r.resultChannel, *resultQueueName)
 }
 func (r *RedisMQFlow) RequestChannels() []api.RequestChannel {
-	return []api.RequestChannel{{Channel: r.requestChannel, Metadata: map[string]any{}}}
+
+	metadata := map[string]any{
+		"inference-gateway":   *inferenceGateway,
+		"inference-objective": *inferenceObjective,
+	}
+
+	return []api.RequestChannel{{Channel: r.requestChannel, Metadata: metadata}}
 }
 
 func (r *RedisMQFlow) RetryChannel() chan api.RetryMessage {
@@ -101,10 +101,10 @@ func resultWorker(ctx context.Context, rdb *redis.Client, resultChannel chan api
 
 // pulls from Redis Queue and put in the request channel
 func requestWorker(ctx context.Context, rdb *redis.Client, msgChannel chan api.RequestMessage, queueName string) {
+	logger := log.FromContext(ctx)
 	sub := rdb.Subscribe(ctx, queueName)
 	defer sub.Close()
 
-	// redis.WithChannelSize(100) -- TODO: consider exposing to config
 	ch := sub.Channel()
 	for {
 		select {
@@ -116,8 +116,7 @@ func requestWorker(ctx context.Context, rdb *redis.Client, msgChannel chan api.R
 
 			err := json.Unmarshal([]byte(rmsg.Payload), &msg)
 			if err != nil {
-				// TODO: log failed to unmarshal message.
-				fmt.Println(err)
+				logger.V(logutil.DEFAULT).Error(err, "Failed to unmarshal message from request channel")
 				continue // skip this message
 
 			}
@@ -129,6 +128,7 @@ func requestWorker(ctx context.Context, rdb *redis.Client, msgChannel chan api.R
 
 // Puts msgs from the retry channel into a Redis sorted-set with a duration Score.
 func addMsgToRetryWorker(ctx context.Context, rdb *redis.Client, retryChannel chan api.RetryMessage, sortedSetName string) {
+	logger := log.FromContext(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -138,8 +138,8 @@ func addMsgToRetryWorker(ctx context.Context, rdb *redis.Client, retryChannel ch
 			score := float64(time.Now().Unix()) + msg.BackoffDurationSeconds
 			bytes, err := json.Marshal(msg.RequestMessage)
 			if err != nil {
-				fmt.Printf("Failed to marshal message for retry in Redis: %s", err.Error())
-				continue // skip this message. TODO: log
+				logger.V(logutil.DEFAULT).Error(err, "Failed to marshal message for retry in Redis")
+				continue // skip this message.
 			}
 			err = rdb.ZAdd(ctx, sortedSetName, redis.Z{
 				Score:  score,
@@ -147,15 +147,14 @@ func addMsgToRetryWorker(ctx context.Context, rdb *redis.Client, retryChannel ch
 			}).Err()
 
 			if err != nil {
-				fmt.Printf("Failed to add message for retry in Redis: %s", err.Error())
-				// TODO:
+				// skip this message. We're not going to retry a "preparing to retry" step.
+				logger.V(logutil.DEFAULT).Error(err, "Failed to add message for retry in Redis")
 			}
 		}
 	}
 
 }
 
-// TODO
 // Every second polls the sorted set and publishes the messages that need to be retried into the request queue
 func retryWorker(ctx context.Context, rdb *redis.Client, msgChannel chan api.RequestMessage) {
 	for {
@@ -184,7 +183,8 @@ func retryWorker(ctx context.Context, rdb *redis.Client, msgChannel chan api.Req
 					fmt.Println(err)
 
 				}
-				// TODO: Publish to request channel or directly to request queue in Redis?
+				// TODO: We probably want to write here back to the request queue/channel in Redis. Adding the msg to the
+				// golang channel directly is not that wise as this might be blocking.
 				msgChannel <- message
 			}
 			time.Sleep(time.Second)
