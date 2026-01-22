@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -32,8 +33,10 @@ func TestRetryMessage_deadlinePassed(t *testing.T) {
 
 	}
 	result := <-resultChannel
-	if result.Payload["error"] != "deadline exceeded" {
-		t.Errorf("Expected error to be: 'deadline exceeded', got: %s", result.Payload["error"])
+	var resultMap map[string]any
+	json.Unmarshal([]byte(result.Payload), &resultMap)
+	if resultMap["error"] != "deadline exceeded" {
+		t.Errorf("Expected error to be: 'deadline exceeded', got: %s", resultMap["error"])
 	}
 
 }
@@ -104,7 +107,7 @@ func TestSheddedRequest(t *testing.T) {
 			Id:              msgId,
 			RetryCount:      0,
 			DeadlineUnixSec: fmt.Sprintf(("%d"), deadline),
-			Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+			Payload:         []byte(`{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0}`),
 		},
 		OrgChannel:         make(chan RequestMessage),
 		InferenceGateway:   "http://localhost:30080/v1/completions",
@@ -145,7 +148,7 @@ func TestSuccessfulRequest(t *testing.T) {
 			Id:              msgId,
 			RetryCount:      0,
 			DeadlineUnixSec: fmt.Sprintf(("%d"), deadline),
-			Payload:         map[string]any{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0},
+			Payload:         []byte(`{"model": "food-review", "prompt": "hi", "max_tokens": 10, "temperature": 0}`),
 		},
 		OrgChannel:         make(chan RequestMessage),
 		InferenceGateway:   "http://localhost:30080/v1/completions",

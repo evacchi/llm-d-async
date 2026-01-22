@@ -19,11 +19,13 @@ type RequestMergePolicy interface {
 	MergeRequestChannels(channels []RequestChannel) EmbelishedRequestChannel
 }
 
+// TODO: Consider per-message metadata map[string]string
+// add enpoint to message level.
 type RequestMessage struct {
-	Id              string         `json:"id"`
-	RetryCount      int            `json:"retry_count,omitempty"`
-	DeadlineUnixSec string         `json:"deadline"`
-	Payload         map[string]any `json:"payload"`
+	Id              string `json:"id"`
+	RetryCount      int    `json:"retry_count,omitempty"` // TODO: Consider
+	DeadlineUnixSec string `json:"deadline"`              // TODO: check about using int64, change name to timeout
+	Payload         []byte `json:"payload"`
 }
 
 type RequestChannel struct {
@@ -49,7 +51,8 @@ type RetryMessage struct {
 	BackoffDurationSeconds float64
 }
 
+// optional field of httpstatus, golang error?
 type ResultMessage struct {
-	Id      string         `json:"id"`
-	Payload map[string]any `json:"payload"`
+	Id      string `json:"id"`
+	Payload []byte `json:"payload"`
 }

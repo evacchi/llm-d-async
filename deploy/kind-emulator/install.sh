@@ -245,7 +245,6 @@ deploy_prometheus_stack() {
     log_info "Prometheus URL: $PROMETHEUS_URL"
 }
 
-
 # Kubernetes-specific Undeployment functions
 undeploy_prometheus_stack() {
     log_info "Uninstalling kube-prometheus-stack..."

@@ -67,7 +67,7 @@ make deploy-ap-on-k8s
     - Publishing a request:
     ```bash
        export REDIS_IP=....
-       kubectl run --rm -i -t publishmsgbox --image=redis --restart=Never -- /usr/local/bin/redis-cli -h $REDIS PUBLISH request-queue '{"id" : "testmsg", "payload":{ "model":"food-review-1", "prompt":"Hi, good morning "}, "deadline" :"23472348233323" }'
+       kubectl run --rm -i -t publishmsgbox --image=redis --restart=Never -- /usr/local/bin/redis-cli -h $REDIS_IP PUBLISH request-queue '{"id" : "testmsg", "payload":{ "model":"food-review-1", "prompt":"Hi, good morning "}, "deadline" :"23472348233323" }'
      ```
 
 ## Command line parameters
@@ -86,7 +86,7 @@ The async processor expects request messages to have the following format:
 {
     "id" : "unique identifier for result mapping",
     "deadline" : "deadline in Unix seconds",
-    "payload" : {regular inference payload}
+    "payload" : {regular inference payload as a byte array}
 }
 ```
 
@@ -95,7 +95,7 @@ Example:
 {
     "id" : "19933123533434",
     "deadline" : "1764045130",
-    "payload": {"model":"food-review","prompt":"hi", "max_tokens":10,"temperature":0}
+    "payload": byte[]({"model":"food-review","prompt":"hi", "max_tokens":10,"temperature":0})
 }
 ```
 
@@ -118,7 +118,7 @@ Results will be written to the results queue and will have the following structu
 ```json
 {
     "id" : "id mapped to the request",
-    "payload" : {/*inference payload*/} ,
+    "payload" : byte[]{/*inference result payload*/} ,
     // or
     "error" : "error's reason"
 }

@@ -71,18 +71,10 @@ func Worker(ctx context.Context, httpClient *http.Client, requestChannel chan Em
 						// Retrying on IO-read error as well.
 						retryMessage(msg, retryChannel, resultChannel)
 					} else {
-						var resultPayload map[string]any
-						err := json.Unmarshal(payloadBytes, &resultPayload)
-						if err != nil {
-							// Not retrying on unmarshalling error.
-							metrics.FailedReqs.Inc()
-							resultChannel <- CreateErrorResultMessage(msg.Id, fmt.Sprintf("Failed to unmarshal inference result payload: %v", err))
-							return
-						}
 						metrics.SuccessfulReqs.Inc()
 						resultChannel <- ResultMessage{
 							Id:      msg.Id,
-							Payload: resultPayload,
+							Payload: payloadBytes,
 						}
 					}
 				}
@@ -142,7 +134,7 @@ func retryMessage(msg EmbelishedRequestMessage, retryChannel chan RetryMessage, 
 func CreateErrorResultMessage(id string, errMsg string) ResultMessage {
 	return ResultMessage{
 		Id:      id,
-		Payload: map[string]any{"error": errMsg},
+		Payload: []byte(`{"error": "` + errMsg + `"}`),
 	}
 }
 
