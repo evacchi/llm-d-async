@@ -6,10 +6,11 @@ ap:
 
   metrics:
     enabled: true
-    port: 8443
-    secure: true
+    port: 9090
+    secure: false
 
   redis:
+     port: 6379
      host: "redis-master.redis.svc.cluster.local"
      inferenceGateway: "http://infra-sim-inference-gateway-istio.llm-d-sim.svc.cluster.local:80/v1/completions"
   

@@ -29,7 +29,8 @@ spec:
           - --redis.inference-gateway
           - "{{ .Values.ap.redis.inferenceGateway }}"
           - --redis.addr
-          - "{{ .Values.ap.redis.host }}:6379"
+          - "{{ .Values.ap.redis.host }}:{{ .Values.ap.redis.port }}"
+          - --metrics-endpoint-auth={{ .Values.ap.metrics.secure }}
         image: "{{ .Values.ap.image.repository }}:{{ .Values.ap.image.tag }}"
         imagePullPolicy: "{{ .Values.ap.imagePullPolicy }}"
         env:
