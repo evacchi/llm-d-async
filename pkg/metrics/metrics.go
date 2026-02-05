@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	controllerruntime "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 const (
@@ -12,21 +13,11 @@ const (
 	SchedulerSubsystem = "llm_d_async"
 )
 
-// RegistererGatherer combines both parts of the API of a Prometheus
-// registry, both the Registerer and the Gatherer interfaces.
-type RegistererGatherer interface {
-	prometheus.Registerer
-	prometheus.Gatherer
-}
-
-var registry RegistererGatherer = prometheus.NewRegistry()
-
 var (
 	Retries = prometheus.NewCounter(prometheus.CounterOpts{
 		Subsystem: SchedulerSubsystem, Name: "async_request_retries_total",
 		Help: "Total number of async request retries.",
 	})
-
 	AsyncReqs = prometheus.NewCounter(prometheus.CounterOpts{
 		Subsystem: SchedulerSubsystem, Name: "async_request_total",
 		Help: "Total number of async requests.",
@@ -62,7 +53,7 @@ var registerMetrics sync.Once
 func Register(customCollectors ...prometheus.Collector) {
 	registerMetrics.Do(func() {
 		for _, collector := range customCollectors {
-			registry.MustRegister(collector)
+			controllerruntime.Registry.MustRegister(collector)
 		}
 	})
 }
