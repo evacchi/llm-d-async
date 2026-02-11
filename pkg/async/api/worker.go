@@ -15,16 +15,9 @@ import (
 	"github.com/llm-d-incubation/llm-d-async/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
-	sharedmetrics "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/backend/metrics"
 )
 
 var baseDelaySeconds = 2
-
-type fakePodlocator struct{}
-
-func (f fakePodlocator) Locate(ctx context.Context, requestMetadata map[string]any) []sharedmetrics.PodMetrics {
-	return []sharedmetrics.PodMetrics{}
-}
 
 func Worker(ctx context.Context, characteristics Characteristics, podMetrics *PodMetrics, httpClient *http.Client, requestChannel chan EmbelishedRequestMessage,
 	retryChannel chan RetryMessage, resultChannel chan ResultMessage) {
@@ -46,7 +39,7 @@ func Worker(ctx context.Context, characteristics Characteristics, podMetrics *Po
 				continue
 			}
 
-			ok := gateRequest(ctx, podMetrics, msg, resultChannel)
+			ok := checkSaturation(ctx, podMetrics, msg, resultChannel)
 			if !ok {
 				retryMessage(msg, retryChannel, resultChannel)
 				continue
@@ -98,10 +91,9 @@ func Worker(ctx context.Context, characteristics Characteristics, podMetrics *Po
 	}
 }
 
-// gateRequest gates a request using the same logic in GIE.
-// Returns false when the request must be gated.
-// FIXME name implies opposite meaning
-func gateRequest(ctx context.Context, podMetrics *PodMetrics, msg EmbelishedRequestMessage, resultChannel chan ResultMessage) bool {
+// checkSaturation gates a request using the same logic in GIE.
+// Returns false when the saturation is over the threshold.
+func checkSaturation(ctx context.Context, podMetrics *PodMetrics, msg EmbelishedRequestMessage, resultChannel chan ResultMessage) bool {
 	logger := log.FromContext(ctx)
 
 	// Compute saturation for the request

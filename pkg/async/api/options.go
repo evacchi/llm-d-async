@@ -17,10 +17,7 @@ limitations under the License.
 package api
 
 import (
-	"fmt"
 	"time"
-
-	"github.com/spf13/pflag"
 )
 
 // MetricsOptions contains configuration for async-processor metrics collection.
@@ -79,94 +76,4 @@ func NewMetricsOptions() *MetricsOptions {
 		QueueDepthThreshold:  10,
 		KVCacheUtilThreshold: 0.9,
 	}
-}
-
-// AddFlags adds flags for MetricsOptions to the specified FlagSet.
-func (opts *MetricsOptions) AddFlags(fs *pflag.FlagSet) {
-	if fs == nil {
-		fs = pflag.CommandLine
-	}
-
-	// Data layer flags
-	fs.StringVar(&opts.ModelServerMetricsScheme, "model-server-metrics-scheme", opts.ModelServerMetricsScheme,
-		"Protocol scheme used in scraping metrics from endpoints (http or https)")
-	fs.StringVar(&opts.ModelServerMetricsPath, "model-server-metrics-path", opts.ModelServerMetricsPath,
-		"URL path used in scraping metrics from endpoints")
-	fs.BoolVar(&opts.ModelServerMetricsHTTPSInsecure, "model-server-metrics-https-insecure-skip-verify", opts.ModelServerMetricsHTTPSInsecure,
-		"Skip TLS certificate verification when using 'https' scheme")
-	fs.DurationVar(&opts.RefreshMetricsInterval, "refresh-metrics-interval", opts.RefreshMetricsInterval,
-		"Interval to refresh metrics from model servers")
-	fs.DurationVar(&opts.MetricsStalenessThreshold, "metrics-staleness-threshold", opts.MetricsStalenessThreshold,
-		"Duration after which metrics are considered stale")
-
-	// Extractor flags
-	fs.StringVar(&opts.EngineLabelKey, "engine-label-key", opts.EngineLabelKey,
-		"Pod label key for identifying the engine type (vllm, sglang, etc.)")
-	fs.StringVar(&opts.DefaultEngine, "default-engine", opts.DefaultEngine,
-		"Default engine type to use when pod label is missing")
-
-	// Pod discovery flags
-	fs.StringVar(&opts.TargetNamespace, "target-namespace", opts.TargetNamespace,
-		"Namespace to watch for model server pods")
-	fs.StringVar(&opts.TargetPoolName, "target-pool-name", opts.TargetPoolName,
-		"Name of the endpoint pool")
-	fs.StringVar(&opts.TargetLabelSelector, "target-label-selector", opts.TargetLabelSelector,
-		"Label selector for discovering model server pods")
-	fs.IntSliceVar(&opts.TargetPorts, "target-ports", opts.TargetPorts,
-		"Target ports to scrape metrics from")
-
-	// Saturation detector flags
-	fs.IntVar(&opts.QueueDepthThreshold, "queue-depth-threshold", opts.QueueDepthThreshold,
-		"Queue depth above which a pod is considered saturated")
-	fs.Float64Var(&opts.KVCacheUtilThreshold, "kv-cache-util-threshold", opts.KVCacheUtilThreshold,
-		"KV cache utilization (0.0 to 1.0) above which a pod is considered saturated")
-}
-
-// Complete performs any post-processing on the options.
-func (opts *MetricsOptions) Complete() error {
-	// No post-processing needed currently
-	return nil
-}
-
-// Validate validates the options.
-func (opts *MetricsOptions) Validate() error {
-	if opts.ModelServerMetricsScheme != "http" && opts.ModelServerMetricsScheme != "https" {
-		return fmt.Errorf("model-server-metrics-scheme must be 'http' or 'https', got %q", opts.ModelServerMetricsScheme)
-	}
-
-	if opts.RefreshMetricsInterval <= 0 {
-		return fmt.Errorf("refresh-metrics-interval must be positive, got %v", opts.RefreshMetricsInterval)
-	}
-
-	if opts.MetricsStalenessThreshold <= 0 {
-		return fmt.Errorf("metrics-staleness-threshold must be positive, got %v", opts.MetricsStalenessThreshold)
-	}
-
-	if opts.TargetNamespace == "" {
-		return fmt.Errorf("target-namespace cannot be empty")
-	}
-
-	if opts.TargetLabelSelector == "" {
-		return fmt.Errorf("target-label-selector cannot be empty")
-	}
-
-	if len(opts.TargetPorts) == 0 {
-		return fmt.Errorf("target-ports cannot be empty")
-	}
-
-	for _, port := range opts.TargetPorts {
-		if port < 1 || port > 65535 {
-			return fmt.Errorf("invalid port number %d in target-ports", port)
-		}
-	}
-
-	if opts.QueueDepthThreshold <= 0 {
-		return fmt.Errorf("queue-depth-threshold must be positive, got %d", opts.QueueDepthThreshold)
-	}
-
-	if opts.KVCacheUtilThreshold <= 0 || opts.KVCacheUtilThreshold > 1.0 {
-		return fmt.Errorf("kv-cache-util-threshold must be between 0.0 and 1.0, got %f", opts.KVCacheUtilThreshold)
-	}
-
-	return nil
 }
