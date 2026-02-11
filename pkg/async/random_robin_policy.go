@@ -48,7 +48,6 @@ func (r *RandomRobinPolicy) MergeRequestChannels(channels []api.RequestChannel) 
 						"x-gateway-inference-objective": channels[i1].Metadata["inference-objective"].(string),
 					},
 					InferenceGateway: channels[i1].Metadata["inference-gateway"].(string),
-					Metadata:         rm.Metadata,
 				}
 				mergedChannel <- erm
 			}

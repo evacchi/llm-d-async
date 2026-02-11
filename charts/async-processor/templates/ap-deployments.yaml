@@ -26,6 +26,7 @@ spec:
       - command:
         - /async-processor
         args:
+          - -v={{ .Values.ap.logging.verbosity | default 2 }}
           {{- if .Values.redis.enabled }}
           - --message-queue-impl=redis-pubsub
           - --redis.inference-gateway
