@@ -10,7 +10,6 @@ import (
 	"github.com/llm-d-incubation/llm-d-async/internal/logging"
 	"github.com/llm-d-incubation/llm-d-async/pkg/async"
 	"github.com/llm-d-incubation/llm-d-async/pkg/async/api"
-	asyncserver "github.com/llm-d-incubation/llm-d-async/pkg/async/server"
 	"github.com/llm-d-incubation/llm-d-async/pkg/metrics"
 	"github.com/llm-d-incubation/llm-d-async/pkg/pubsub"
 	"github.com/llm-d-incubation/llm-d-async/pkg/redis"
@@ -106,6 +105,9 @@ func main() {
 	restConfig := ctrl.GetConfigOrDie()
 	httpClient := http.DefaultClient
 
+	msrv, _ := metricsserver.NewServer(metricsServerOptions, restConfig, httpClient)
+	go msrv.Start(ctx) // nolint:errcheck
+
 	/////
 
 	var policy api.RequestMergePolicy
@@ -128,7 +130,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr, err := asyncserver.NewDefaultManager(metricsOpts.TargetNamespace, restConfig, metricsServerOptions)
+	// Create a controller-runtime manager
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
 	if err != nil {
 		setupLog.Error(err, "Failed to create manager")
 		os.Exit(1)
