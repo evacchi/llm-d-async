@@ -33,18 +33,15 @@ func Worker(ctx context.Context, characteristics Characteristics, podMetrics *Po
 				// Only count first attempt as a new request.
 				metrics.AsyncReqs.Inc()
 			}
-
 			payloadBytes := validateAndMarshall(resultChannel, msg.RequestMessage)
 			if payloadBytes == nil {
 				continue
 			}
-
 			ok := checkSaturation(ctx, podMetrics, msg, resultChannel)
 			if !ok {
 				retryMessage(msg, retryChannel, resultChannel)
 				continue
 			}
-
 			// Using a function object for easy boundries for 'return' and 'defer'!
 			sendInferenceRequest := func() {
 				logger.V(logutil.DEBUG).Info("Sending inference request.")
