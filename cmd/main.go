@@ -58,6 +58,7 @@ func main() {
 	}
 
 	opts.BindFlags(flag.CommandLine)
+	flag.Parse()
 
 	logging.InitLogging(&opts, loggerVerbosity)
 	defer logging.Sync() // nolint:errcheck
@@ -128,7 +129,11 @@ func main() {
 	}
 
 	// Create podMetrics with the manager so datastore reconcilers can be registered
-	podMetrics := api.NewPodMetrics(prometheusURL, poolName)
+	podMetrics, err := api.NewPodMetrics(prometheusURL, poolName)
+	if err != nil {
+		setupLog.Error(err, "unable to create PodMetrics")
+		os.Exit(1)
+	}
 
 	requestChannel := policy.MergeRequestChannels(impl.RequestChannels()).Channel
 	for w := 1; w <= concurrency; w++ {

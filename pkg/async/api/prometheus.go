@@ -19,49 +19,38 @@ package api
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"time"
 
+	"github.com/prometheus/client_golang/api"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 )
 
 // PrometheusClient queries Prometheus for metrics.
 type PrometheusClient struct {
-	baseURL    string
-	httpClient *http.Client
+	api v1.API
 }
 
-// NewPrometheusClient creates a new Prometheus query client.
-func NewPrometheusClient(baseURL string) *PrometheusClient {
-	// Skip TLS verification for internal cluster communication
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+// NewPrometheusClient creates a new Prometheus query client using the official Prometheus API client.
+func NewPrometheusClient(baseURL string) (*PrometheusClient, error) {
+	client, err := api.NewClient(api.Config{
+		Address: baseURL,
+		RoundTripper: &http.Transport{
+			// FIXME: Skip TLS verification for internal cluster communication
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Prometheus API client: %w", err)
 	}
 
 	return &PrometheusClient{
-		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout:   5 * time.Second,
-			Transport: transport,
-		},
-	}
-}
-
-// prometheusResponse represents the Prometheus query API response.
-type prometheusResponse struct {
-	Status string `json:"status"`
-	Data   struct {
-		ResultType string `json:"resultType"`
-		Result     []struct {
-			Metric map[string]string `json:"metric"`
-			Value  []interface{}     `json:"value"`
-		} `json:"result"`
-	} `json:"data"`
+		api: v1.NewAPI(client),
+	}, nil
 }
 
 // QueryPoolSaturation queries the inference_extension_flow_control_pool_saturation metric.
@@ -72,50 +61,29 @@ func (pc *PrometheusClient) QueryPoolSaturation(ctx context.Context, poolName st
 	// Build the PromQL query
 	query := fmt.Sprintf(`inference_extension_flow_control_pool_saturation{inference_pool="%s"}`, poolName)
 
-	// Build the query URL
-	queryURL := fmt.Sprintf("%s/api/v1/query?query=%s", pc.baseURL, url.QueryEscape(query))
-
 	logger.V(logutil.DEBUG).Info("Querying Prometheus for pool saturation",
-		"url", queryURL,
+		"query", query,
 		"poolName", poolName)
 
-	// Create the request
-	req, err := http.NewRequestWithContext(ctx, "GET", queryURL, nil)
-	if err != nil {
-		return 0.0, fmt.Errorf("failed to create Prometheus request: %w", err)
-	}
-
-	// Execute the request
-	resp, err := pc.httpClient.Do(req)
+	// Execute the query using the Prometheus API client
+	result, warnings, err := pc.api.Query(ctx, query, time.Now())
 	if err != nil {
 		return 0.0, fmt.Errorf("failed to query Prometheus: %w", err)
 	}
-	defer resp.Body.Close()
 
-	// Read the response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0.0, fmt.Errorf("failed to read Prometheus response: %w", err)
+	// Log any warnings
+	if len(warnings) > 0 {
+		logger.V(logutil.DEFAULT).Info("Prometheus query returned warnings",
+			"warnings", warnings)
 	}
 
-	// Check HTTP status
-	if resp.StatusCode != http.StatusOK {
-		return 0.0, fmt.Errorf("Prometheus query failed with status %d: %s", resp.StatusCode, string(body))
+	// Check if we got results
+	if result.Type() != model.ValVector {
+		return 0.0, fmt.Errorf("unexpected result type: %s", result.Type())
 	}
 
-	// Parse the response
-	var promResp prometheusResponse
-	if err := json.Unmarshal(body, &promResp); err != nil {
-		return 0.0, fmt.Errorf("failed to parse Prometheus response: %w", err)
-	}
-
-	// Check status
-	if promResp.Status != "success" {
-		return 0.0, fmt.Errorf("Prometheus query returned status: %s", promResp.Status)
-	}
-
-	// Extract the value
-	if len(promResp.Data.Result) == 0 {
+	vector := result.(model.Vector)
+	if len(vector) == 0 {
 		// No data found - this could mean:
 		// 1. The metric hasn't been scraped yet
 		// 2. The pool name doesn't match
@@ -126,26 +94,13 @@ func (pc *PrometheusClient) QueryPoolSaturation(ctx context.Context, poolName st
 	}
 
 	// Get the first result
-	result := promResp.Data.Result[0]
-	if len(result.Value) < 2 {
-		return 0.0, fmt.Errorf("unexpected Prometheus value format")
-	}
-
-	// The value is [timestamp, "value_as_string"]
-	valueStr, ok := result.Value[1].(string)
-	if !ok {
-		return 0.0, fmt.Errorf("unexpected value type in Prometheus response")
-	}
-
-	// Parse the saturation value
-	var saturation float64
-	if _, err := fmt.Sscanf(valueStr, "%f", &saturation); err != nil {
-		return 0.0, fmt.Errorf("failed to parse saturation value: %w", err)
-	}
+	sample := vector[0]
+	saturation := float64(sample.Value)
 
 	logger.V(logutil.DEBUG).Info("Queried pool saturation from Prometheus",
 		"poolName", poolName,
-		"saturation", saturation)
+		"saturation", saturation,
+		"timestamp", sample.Timestamp)
 
 	return saturation, nil
 }

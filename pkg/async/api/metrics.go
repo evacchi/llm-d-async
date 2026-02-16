@@ -14,14 +14,18 @@ type PodMetrics struct {
 }
 
 // NewPodMetrics creates the metrics collection subsystem for async-processor.
-func NewPodMetrics(prometheusURL string, poolName string) *PodMetrics {
+func NewPodMetrics(prometheusURL string, poolName string) (*PodMetrics, error) {
 	// Create PrometheusClient - required for pool saturation queries
 	if prometheusURL == "" {
 		setupLog.Error(nil, "PrometheusURL is required for pool saturation queries")
-		return nil
+		return nil, nil
 	}
 
-	prometheusClient := NewPrometheusClient(prometheusURL)
+	prometheusClient, err := NewPrometheusClient(prometheusURL)
+	if err != nil {
+		setupLog.Error(err, "Failed to create Prometheus client")
+		return nil, err
+	}
 	setupLog.Info("Prometheus client configured for pool saturation queries",
 		"prometheusURL", prometheusURL,
 		"poolName", poolName)
@@ -29,5 +33,5 @@ func NewPodMetrics(prometheusURL string, poolName string) *PodMetrics {
 	return &PodMetrics{
 		prometheusClient: prometheusClient,
 		poolName:         poolName,
-	}
+	}, nil
 }
