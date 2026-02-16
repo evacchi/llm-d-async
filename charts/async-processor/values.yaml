@@ -28,4 +28,8 @@ ap:
   podWatcher:
     namespace: llm-d-sim  # Namespace where inference pods are located
 
+  prometheus:
+    url: "https://kube-prometheus-stack-prometheus.async-processor-monitoring.svc.cluster.local:9090"  # Prometheus server URL for querying pool saturation
+    poolName: "gaie-sim"  # Name of the inference pool to query saturation for
+
 
