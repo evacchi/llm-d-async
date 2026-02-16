@@ -93,28 +93,42 @@ func Worker(ctx context.Context, characteristics Characteristics, podMetrics *Po
 func checkSaturation(ctx context.Context, podMetrics *PodMetrics, msg EmbelishedRequestMessage, resultChannel chan ResultMessage) bool {
 	logger := log.FromContext(ctx)
 
-	// Compute saturation for the request
-	candidates := podMetrics.podLocator.Locate(ctx, msg.Metadata)
-	logger.V(logutil.DEBUG).Info("Found candidates for request",
-		"requestId", msg.Id,
-		"candidates", candidates)
+	// Prometheus client must be configured
+	if podMetrics.prometheusClient == nil {
+		metrics.FailedReqs.Inc()
+		resultChannel <- CreateErrorResultMessage(msg.RequestMessage, "Prometheus client not configured for saturation check")
+		logger.Error(nil, "Prometheus client not configured",
+			"requestId", msg.Id)
+		return false
+	}
 
-	saturation := podMetrics.saturationDetector.Saturation(ctx, candidates)
-	logger.V(logutil.DEBUG).Info("Computed saturation for request",
-		"requestId", msg.Id,
-		"candidateCount", len(candidates),
-		"saturation", saturation,
-		"metadata", msg.Metadata)
+	// Query pool saturation from EPP via Prometheus
+	saturation, err := podMetrics.prometheusClient.QueryPoolSaturation(ctx, podMetrics.poolName)
+	if err != nil {
+		metrics.FailedReqs.Inc()
+		resultChannel <- CreateErrorResultMessage(msg.RequestMessage,
+			fmt.Sprintf("failed to query pool saturation from Prometheus: %s", err.Error()))
+		logger.Error(err, "Failed to query pool saturation from Prometheus",
+			"requestId", msg.Id,
+			"poolName", podMetrics.poolName)
+		return false
+	}
 
-	// If fully saturated, reject the request
+	logger.V(logutil.DEBUG).Info("Queried pool saturation from Prometheus",
+		"requestId", msg.Id,
+		"poolName", podMetrics.poolName,
+		"saturation", saturation)
+
+	// Check if pool is saturated
 	if saturation >= 1.0 {
 		metrics.SheddedRequests.Inc()
-		resultChannel <- CreateErrorResultMessage(msg.RequestMessage, "backend fully saturated")
-		logger.V(logutil.DEBUG).Info("Request rejected due to full saturation, scheduled for retrying",
+		resultChannel <- CreateErrorResultMessage(msg.RequestMessage, "backend pool fully saturated")
+		logger.V(logutil.DEBUG).Info("Request rejected due to full pool saturation",
 			"requestId", msg.Id,
 			"saturation", saturation)
 		return false
 	}
+
 	return true
 }
 

@@ -13,7 +13,6 @@ import (
 	"github.com/llm-d-incubation/llm-d-async/pkg/metrics"
 	"github.com/llm-d-incubation/llm-d-async/pkg/pubsub"
 	"github.com/llm-d-incubation/llm-d-async/pkg/redis"
-	"github.com/spf13/pflag"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -35,6 +34,9 @@ func main() {
 	var requestMergePolicy string
 	var messageQueueImpl string
 
+	var prometheusURL string
+	var poolName string
+
 	flag.IntVar(&loggerVerbosity, "v", logging.DEFAULT, "number for the log level verbosity")
 
 	flag.IntVar(&metricsPort, "metrics-port", 9090, "The metrics port")
@@ -45,29 +47,17 @@ func main() {
 	flag.StringVar(&requestMergePolicy, "request-merge-policy", "random-robin", "The request merge policy to use. Supported policies: random-robin")
 	flag.StringVar(&messageQueueImpl, "message-queue-impl", "redis-pubsub", "The message queue implementation to use. Supported implementations: redis-pubsub")
 
-	// Create metrics options and register flags
-	metricsOpts := api.NewMetricsOptions()
-	metricsOpts.AddFlags(pflag.CommandLine)
+	// Prometheus configuration
+	flag.StringVar(&prometheusURL, "prometheus-url", prometheusURL,
+		"URL of Prometheus server for querying pool saturation (e.g., http://prometheus.monitoring.svc.cluster.local:9090)")
+	flag.StringVar(&poolName, "pool-name", poolName,
+		"Name of the inference pool to query saturation for")
 
 	opts := zap.Options{
 		Development: true,
 	}
 
 	opts.BindFlags(flag.CommandLine)
-
-	// Add standard flags to pflag command line
-	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
-	pflag.Parse()
-
-	// Complete and validate metrics options
-	if err := metricsOpts.Complete(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to complete metrics options: %v\n", err)
-		os.Exit(1)
-	}
-	if err := metricsOpts.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid metrics options: %v\n", err)
-		os.Exit(1)
-	}
 
 	logging.InitLogging(&opts, loggerVerbosity)
 	defer logging.Sync() // nolint:errcheck
@@ -138,7 +128,7 @@ func main() {
 	}
 
 	// Create podMetrics with the manager so datastore reconcilers can be registered
-	podMetrics := api.NewPodMetrics(ctx, mgr, metricsOpts)
+	podMetrics := api.NewPodMetrics(prometheusURL, poolName)
 
 	requestChannel := policy.MergeRequestChannels(impl.RequestChannels()).Channel
 	for w := 1; w <= concurrency; w++ {
