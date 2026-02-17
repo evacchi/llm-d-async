@@ -14,12 +14,13 @@ import (
 	"github.com/llm-d-incubation/llm-d-async/pkg/pubsub"
 	"github.com/llm-d-incubation/llm-d-async/pkg/redis"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-
-	ctrl "sigs.k8s.io/controller-runtime"
+	fwkplugin "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/interface/plugin"
+	dlextractormetrics "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/datalayer/extractor/metrics"
+	dlsourcemetrics "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/datalayer/source/metrics"
 )
 
 func main() {
@@ -33,6 +34,9 @@ func main() {
 	var requestMergePolicy string
 	var messageQueueImpl string
 
+	var prometheusURL string
+	var poolName string
+
 	flag.IntVar(&loggerVerbosity, "v", logging.DEFAULT, "number for the log level verbosity")
 
 	flag.IntVar(&metricsPort, "metrics-port", 9090, "The metrics port")
@@ -42,6 +46,12 @@ func main() {
 
 	flag.StringVar(&requestMergePolicy, "request-merge-policy", "random-robin", "The request merge policy to use. Supported policies: random-robin")
 	flag.StringVar(&messageQueueImpl, "message-queue-impl", "redis-pubsub", "The message queue implementation to use. Supported implementations: redis-pubsub")
+
+	// Prometheus configuration
+	flag.StringVar(&prometheusURL, "prometheus-url", prometheusURL,
+		"URL of Prometheus server for querying pool saturation (e.g., http://prometheus.monitoring.svc.cluster.local:9090)")
+	flag.StringVar(&poolName, "pool-name", poolName,
+		"Name of the inference pool to query saturation for")
 
 	opts := zap.Options{
 		Development: true,
@@ -61,6 +71,10 @@ func main() {
 	printAllFlags(setupLog)
 
 	metrics.Register(metrics.GetAsyncProcessorCollectors()...)
+
+	// Register data layer plugins
+	fwkplugin.Register(dlsourcemetrics.MetricsDataSourceType, dlsourcemetrics.MetricsDataSourceFactory)
+	fwkplugin.Register(dlextractormetrics.MetricsExtractorType, dlextractormetrics.ModelServerExtractorFactory)
 
 	ctx := ctrl.SetupSignalHandler()
 
@@ -107,13 +121,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create a controller-runtime manager
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{})
+	if err != nil {
+		setupLog.Error(err, "Failed to create manager")
+		os.Exit(1)
+	}
+
+	// Create podMetrics with the manager so datastore reconcilers can be registered
+	podMetrics, err := api.NewPodMetrics(prometheusURL, poolName)
+	if err != nil {
+		setupLog.Error(err, "unable to create PodMetrics")
+		os.Exit(1)
+	}
+
 	requestChannel := policy.MergeRequestChannels(impl.RequestChannels()).Channel
 	for w := 1; w <= concurrency; w++ {
-		go api.Worker(ctx, impl.Characteristics(), httpClient, requestChannel, impl.RetryChannel(), impl.ResultChannel())
+		go api.Worker(ctx, impl.Characteristics(), podMetrics, httpClient, requestChannel, impl.RetryChannel(), impl.ResultChannel())
 	}
 
 	impl.Start(ctx)
-	<-ctx.Done()
+
+	// Start the manager (this starts all reconcilers and blocks)
+	setupLog.Info("Starting controller manager")
+	if err := mgr.Start(ctx); err != nil {
+		setupLog.Error(err, "Failed to start manager")
+		os.Exit(1)
+	}
 }
 
 func printAllFlags(setupLog logr.Logger) {

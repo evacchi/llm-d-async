@@ -20,6 +20,16 @@ ap:
      port: 6379
      host: "redis-master.redis.svc.cluster.local"
      inferenceGateway: "http://infra-sim-inference-gateway-istio.llm-d-sim.svc.cluster.local:80/v1/completions"
-  
+
+  logging:
+    level: info  # Log level: info, debug, trace
+    verbosity: 4  # Verbosity level for detailed logging (2=DEFAULT, 3=VERBOSE, 4=DEBUG, 5=TRACE)
+
+  podWatcher:
+    namespace: llm-d-sim  # Namespace where inference pods are located
+
+  prometheus:
+    url: "https://kube-prometheus-stack-prometheus.async-processor-monitoring.svc.cluster.local:9090"  # Prometheus server URL for querying pool saturation
+    poolName: "gaie-sim"  # Name of the inference pool to query saturation for
 
 

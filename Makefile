@@ -95,11 +95,17 @@ destroy-kind-cluster:
 	export KIND=$(KIND) KUBECTL=$(KUBECTL) && \
         deploy/kind-emulator/teardown.sh
 
+# EPP configuration for local development
+EPP_IMAGE_TAG ?=
+EPP_IMAGE_PULL_POLICY ?=
+POOL_NAME ?= gaie-sim
+
 # Deploys the Async Processor on a pre-existing Kind cluster or creates one if specified
 .PHONY: deploy-ap-emulated-on-kind
 deploy-ap-emulated-on-kind:
 	@echo ">>> Deploying async processor (cluster args: $(KIND_ARGS), image: $(IMG))"
 	KIND=$(KIND) KUBECTL=$(KUBECTL) IMG=$(IMG) DEPLOY_REDIS=$(DEPLOY_REDIS) DEPLOY_LLM_D=$(DEPLOY_LLM_D) ENVIRONMENT=kind-emulator CREATE_CLUSTER=$(CREATE_CLUSTER) CLUSTER_GPU_TYPE=$(CLUSTER_GPU_TYPE) CLUSTER_NODES=$(CLUSTER_NODES) CLUSTER_GPUS=$(CLUSTER_GPUS) NAMESPACE_SCOPED=false \
+	EPP_IMAGE_TAG=$(EPP_IMAGE_TAG) EPP_IMAGE_PULL_POLICY=$(EPP_IMAGE_PULL_POLICY) POOL_NAME=$(POOL_NAME) \
 		deploy/install.sh
 
 ## Undeploy Async Processor from the emulated environment on Kind.

@@ -57,6 +57,12 @@ LLM_D_MODELSERVICE_VALUES=${LLM_D_MODELSERVICE_VALUES:-"$EXAMPLE_DIR/ms-$WELL_LI
 ITL_AVERAGE_LATENCY_MS=${ITL_AVERAGE_LATENCY_MS:-20}
 TTFT_AVERAGE_LATENCY_MS=${TTFT_AVERAGE_LATENCY_MS:-200}
 
+# EPP Configuration (for local development/testing with custom EPP image)
+EPP_IMAGE_TAG=${EPP_IMAGE_TAG:-""}  # If set, override EPP image tag
+EPP_IMAGE_HUB=${EPP_IMAGE_HUB:-"us-central1-docker.pkg.dev/k8s-staging-images/gateway-api-inference-extension"}
+EPP_IMAGE_PULL_POLICY=${EPP_IMAGE_PULL_POLICY:-""}  # If set, override pull policy
+POOL_NAME=${POOL_NAME:-"gaie-sim"}  # Pool name for EPP and async-processor
+
 # Gateway Configuration
 GATEWAY_PROVIDER=${GATEWAY_PROVIDER:-"istio"} # Options: kgateway, istio
 BENCHMARK_MODE=${BENCHMARK_MODE:-"true"} # if true, updates to Istio config for benchmark
@@ -407,7 +413,8 @@ deploy_ap_controller() {
         --set ap.image.tag=$AP_IMAGE_TAG \
         --set ap.imagePullPolicy=$AP_IMAGE_PULL_POLICY \
         --set ap.baseName=$WELL_LIT_PATH_NAME \
-        --set ap.logging.level=$AP_LOG_LEVEL 
+        --set ap.logging.level=$AP_LOG_LEVEL \
+        --set ap.prometheus.poolName=$POOL_NAME 
         
     
     # Wait for AP to be ready
@@ -495,10 +502,35 @@ deploy_llm_d_infrastructure() {
       yq eval ".decode.containers[0].args += [\"--max-num-seqs=$VLLM_MAX_NUM_SEQS\"]" -i "$LLM_D_MODELSERVICE_VALUES"
     fi
 
+    # Configure EPP image if custom tag is specified (for local development/testing)
+    if [ -n "$EPP_IMAGE_TAG" ]; then
+      log_info "Configuring EPP to use custom image tag: $EPP_IMAGE_TAG"
+      # Find gaie values file and override image tag
+      GAIE_VALUES_FILE="$EXAMPLE_DIR/gaie-$WELL_LIT_PATH_NAME/values.yaml"
+      if [ -f "$GAIE_VALUES_FILE" ]; then
+        # Set the image hub and tag
+        yq eval ".inferenceExtension.image.hub = \"$EPP_IMAGE_HUB\"" -i "$GAIE_VALUES_FILE"
+        yq eval ".inferenceExtension.image.name = \"epp\"" -i "$GAIE_VALUES_FILE"
+        yq eval ".inferenceExtension.image.tag = \"$EPP_IMAGE_TAG\"" -i "$GAIE_VALUES_FILE"
+        if [ -n "$EPP_IMAGE_PULL_POLICY" ]; then
+          log_info "Setting EPP image pull policy to: $EPP_IMAGE_PULL_POLICY"
+          yq eval ".inferenceExtension.image.pullPolicy = \"$EPP_IMAGE_PULL_POLICY\"" -i "$GAIE_VALUES_FILE"
+        fi
+      else
+        log_warning "EPP values file not found at $GAIE_VALUES_FILE, cannot override image"
+      fi
+    fi
+
     # Deploy llm-d core components
     log_info "Deploying llm-d core components"
     helmfile apply -e $GATEWAY_PROVIDER -n ${LLMD_NS}
     kubectl apply -f httproute.yaml -n ${LLMD_NS}
+
+    # Apply EnvoyFilter for Istio to enable ExtProc
+    if [ "$GATEWAY_PROVIDER" == "istio" ]; then
+        log_info "Applying EnvoyFilter for ExtProc integration"
+        kubectl apply -f envoyfilter.yaml -n ${LLMD_NS}
+    fi
 
     if [ "$GATEWAY_PROVIDER" == "kgateway" ]; then
         log_info "Patching kgateway service to NodePort"

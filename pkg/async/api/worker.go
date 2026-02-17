@@ -14,12 +14,12 @@ import (
 
 	"github.com/llm-d-incubation/llm-d-async/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/logging"
+	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 )
 
 var baseDelaySeconds = 2
 
-func Worker(ctx context.Context, characteristics Characteristics, httpClient *http.Client, requestChannel chan EmbelishedRequestMessage,
+func Worker(ctx context.Context, characteristics Characteristics, podMetrics *PodMetrics, httpClient *http.Client, requestChannel chan EmbelishedRequestMessage,
 	retryChannel chan RetryMessage, resultChannel chan ResultMessage) {
 
 	logger := log.FromContext(ctx)
@@ -37,7 +37,11 @@ func Worker(ctx context.Context, characteristics Characteristics, httpClient *ht
 			if payloadBytes == nil {
 				continue
 			}
-
+			ok := checkSaturation(ctx, podMetrics, msg, resultChannel)
+			if !ok {
+				retryMessage(msg, retryChannel, resultChannel)
+				continue
+			}
 			// Using a function object for easy boundries for 'return' and 'defer'!
 			sendInferenceRequest := func() {
 				logger.V(logutil.DEBUG).Info("Sending inference request.")
@@ -82,6 +86,50 @@ func Worker(ctx context.Context, characteristics Characteristics, httpClient *ht
 			sendInferenceRequest()
 		}
 	}
+}
+
+// checkSaturation gates a request using the same logic in GIE.
+// Returns false when the saturation is over the threshold.
+func checkSaturation(ctx context.Context, podMetrics *PodMetrics, msg EmbelishedRequestMessage, resultChannel chan ResultMessage) bool {
+	logger := log.FromContext(ctx)
+
+	// Prometheus client must be configured
+	if podMetrics.prometheusClient == nil {
+		metrics.FailedReqs.Inc()
+		resultChannel <- CreateErrorResultMessage(msg.RequestMessage, "Prometheus client not configured for saturation check")
+		logger.Error(nil, "Prometheus client not configured",
+			"requestId", msg.Id)
+		return false
+	}
+
+	// Query pool saturation from EPP via Prometheus
+	saturation, err := podMetrics.prometheusClient.QueryPoolSaturation(ctx, podMetrics.poolName)
+	if err != nil {
+		metrics.FailedReqs.Inc()
+		resultChannel <- CreateErrorResultMessage(msg.RequestMessage,
+			fmt.Sprintf("failed to query pool saturation from Prometheus: %s", err.Error()))
+		logger.Error(err, "Failed to query pool saturation from Prometheus",
+			"requestId", msg.Id,
+			"poolName", podMetrics.poolName)
+		return false
+	}
+
+	logger.V(logutil.DEBUG).Info("Queried pool saturation from Prometheus",
+		"requestId", msg.Id,
+		"poolName", podMetrics.poolName,
+		"saturation", saturation)
+
+	// Check if pool is saturated
+	if saturation >= 1.0 {
+		metrics.SheddedRequests.Inc()
+		resultChannel <- CreateErrorResultMessage(msg.RequestMessage, "backend pool fully saturated")
+		logger.V(logutil.DEBUG).Info("Request rejected due to full pool saturation",
+			"requestId", msg.Id,
+			"saturation", saturation)
+		return false
+	}
+
+	return true
 }
 
 // parsing and validating payload. On failure puts an error msg on the result-channel and returns nil

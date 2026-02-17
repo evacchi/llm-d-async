@@ -10,7 +10,7 @@ import (
 	"cloud.google.com/go/pubsub/v2"
 	"github.com/llm-d-incubation/llm-d-async/pkg/async/api"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/logging"
+	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/common/observability/logging"
 )
 
 const PUBSUB_ID = "pubsub-id"
@@ -157,7 +157,7 @@ func requestWorker(ctx context.Context, pubSubClient *pubsub.Client, subscriberI
 		defer resultChannels.Delete(msgObj.Id)
 
 		if msgObj.Metadata == nil {
-			msgObj.Metadata = make(map[string]string)
+			msgObj.Metadata = make(map[string]any)
 		}
 		msgObj.Metadata[PUBSUB_ID] = msg.ID
 		ch <- msgObj

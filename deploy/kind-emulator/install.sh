@@ -126,6 +126,9 @@ check_specific_prerequisites() {
     # Load AP image into KIND cluster
     load_image
 
+    # Load EPP image into KIND cluster if EPP_IMAGE_TAG is set
+    load_epp_image
+
     log_success "All Kind emulated deployment prerequisites met"
 }
 
@@ -180,6 +183,28 @@ load_image() {
     kind load docker-image "$AP_IMAGE_REPO:$AP_IMAGE_TAG" --name "$CLUSTER_NAME"
     
     log_success "Image '$AP_IMAGE_REPO:$AP_IMAGE_TAG' loaded into KIND cluster '$CLUSTER_NAME'"
+}
+
+# Loads EPP image into the Kind cluster if EPP_IMAGE_TAG is set
+load_epp_image() {
+    if [ -z "$EPP_IMAGE_TAG" ]; then
+        log_info "EPP_IMAGE_TAG not set, skipping EPP image loading"
+        return 0
+    fi
+
+    local EPP_IMAGE="$EPP_IMAGE_HUB/epp:$EPP_IMAGE_TAG"
+    log_info "Loading EPP image '$EPP_IMAGE' into KIND cluster..."
+
+    # Check if the image exists locally
+    if ! docker image inspect "$EPP_IMAGE" >/dev/null 2>&1; then
+        log_warning "EPP image '$EPP_IMAGE' not found locally - please build or pull the image first"
+        return 1
+    fi
+
+    # Load the image into the KIND cluster
+    kind load docker-image "$EPP_IMAGE" --name "$CLUSTER_NAME"
+
+    log_success "EPP image '$EPP_IMAGE' loaded into KIND cluster '$CLUSTER_NAME'"
 }
 
 #### REQUIRED FUNCTION used by deploy/install.sh ####

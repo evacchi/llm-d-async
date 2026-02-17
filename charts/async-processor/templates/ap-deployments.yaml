@@ -26,16 +26,21 @@ spec:
       - command:
         - /async-processor
         args:
-          {{- if .Values.redis.enabled }}
+          - -v={{ .Values.ap.logging.verbosity | default 2 }}
+          {{- if .Values.ap.redis.enabled }}
           - --message-queue-impl=redis-pubsub
           - --redis.inference-gateway
           - "{{ .Values.ap.redis.inferenceGateway }}"
           - --redis.addr
           - "{{ .Values.ap.redis.host }}:{{ .Values.ap.redis.port }}"
-          {{- else if .Values.gcpPubSub.enabled  }}
+          {{- else if .Values.ap.gcpPubSub.enabled  }}
           - --message-queue-impl=gcp-pubsub
           {{- end}}
           - --metrics-endpoint-auth={{ .Values.ap.metrics.secure }}
+          {{- if .Values.ap.prometheus }}
+          - --prometheus-url={{ .Values.ap.prometheus.url }}
+          - --pool-name={{ .Values.ap.prometheus.poolName }}
+          {{- end }}
         image: "{{ .Values.ap.image.repository }}:{{ .Values.ap.image.tag }}"
         imagePullPolicy: "{{ .Values.ap.imagePullPolicy }}"
         env:
