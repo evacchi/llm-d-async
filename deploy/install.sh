@@ -41,6 +41,12 @@ SKIP_TLS_VERIFY=${SKIP_TLS_VERIFY:-"false"}
 AP_LOG_LEVEL=${AP_LOG_LEVEL:-"info"}
 VALUES_FILE=${VALUES_FILE:-"$AP_PROJECT/charts/async-processor/values.yaml"}
 
+# Dispatch Gate Configuration
+DISPATCH_GATE_TYPE=${DISPATCH_GATE_TYPE:-""}
+SATURATION_INFERENCE_POOL=${SATURATION_INFERENCE_POOL:-""}
+SATURATION_THRESHOLD=${SATURATION_THRESHOLD:-""}
+AVG_QUEUE_SIZE_MODEL_NAME=${AVG_QUEUE_SIZE_MODEL_NAME:-""}
+
 # Redis Configuration
 REDIS_RELEASE_NAME=${REDIS_RELEASE_NAME:-"redis"}
 
@@ -400,21 +406,44 @@ deploy_ap_controller() {
     # Deploy AP using Helm chart
     log_info "Installing Async-Processor via Helm chart"
 
+    local HELM_SETS=(
+        --set ap.image.repository=$AP_IMAGE_REPO
+        --set ap.image.tag=$AP_IMAGE_TAG
+        --set ap.imagePullPolicy=$AP_IMAGE_PULL_POLICY
+        --set ap.baseName=$WELL_LIT_PATH_NAME
+        --set ap.logging.level=$AP_LOG_LEVEL
+    )
+
+    # Dispatch gate configuration
+    if [ -n "$DISPATCH_GATE_TYPE" ]; then
+        HELM_SETS+=(--set ap.dispatchGate.type=$DISPATCH_GATE_TYPE)
+    fi
+    if [ -n "$PROMETHEUS_URL" ]; then
+        HELM_SETS+=(--set ap.dispatchGate.prometheus.url=$PROMETHEUS_URL)
+    fi
+    if [ "$SKIP_TLS_VERIFY" = "true" ]; then
+        HELM_SETS+=(--set ap.dispatchGate.prometheus.insecureSkipVerify=true)
+    fi
+    if [ -n "$SATURATION_INFERENCE_POOL" ]; then
+        HELM_SETS+=(--set ap.dispatchGate.saturation.inferencePool=$SATURATION_INFERENCE_POOL)
+    fi
+    if [ -n "$SATURATION_THRESHOLD" ]; then
+        HELM_SETS+=(--set ap.dispatchGate.saturation.threshold=$SATURATION_THRESHOLD)
+    fi
+    if [ -n "$AVG_QUEUE_SIZE_MODEL_NAME" ]; then
+        HELM_SETS+=(--set ap.dispatchGate.avgQueueSize.modelName=$AVG_QUEUE_SIZE_MODEL_NAME)
+    fi
+
     helm upgrade -i "$AP_RELEASE_NAME" ${AP_PROJECT}/charts/async-processor \
         -n $AP_NS \
         --values $VALUES_FILE \
-        --set ap.image.repository=$AP_IMAGE_REPO \
-        --set ap.image.tag=$AP_IMAGE_TAG \
-        --set ap.imagePullPolicy=$AP_IMAGE_PULL_POLICY \
-        --set ap.baseName=$WELL_LIT_PATH_NAME \
-        --set ap.logging.level=$AP_LOG_LEVEL 
-        
-    
+        "${HELM_SETS[@]}"
+
     # Wait for AP to be ready
     log_info "Waiting for AP to be ready..."
     kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=async-processor -n $AP_NS --timeout=30s || \
         log_warning "AP is not ready yet - check 'kubectl get pods -n $AP_NS'"
-    
+
     log_success "AP deployment complete"
 }
 

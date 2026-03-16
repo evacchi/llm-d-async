@@ -86,7 +86,5 @@ func SaturationGate() *SaturationMetricDispatchGate {
 		return NewSaturationMetricDispatchGateWithSource(source, *saturationInferencePool, *saturationThreshold)
 	}
 
-	return NewSaturationMetricDispatchGate(api.Config{
-		Address: *prometheusURL,
-	}, *saturationInferencePool, *saturationThreshold)
+	return NewSaturationMetricDispatchGate(prometheusClientConfig(), *saturationInferencePool, *saturationThreshold)
 }

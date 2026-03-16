@@ -18,7 +18,9 @@ package flowcontrol
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -44,6 +46,14 @@ type MetricSource interface {
 // PrometheusMetricSource implements MetricSource by querying a Prometheus-compatible API.
 type PrometheusMetricSource struct {
 	api v1.API
+}
+
+// InsecureSkipVerifyTransport returns an http.RoundTripper that skips TLS certificate verification.
+// Use only for development/testing with self-signed certificates.
+func InsecureSkipVerifyTransport() http.RoundTripper {
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // intentional for self-signed certs
+	}
 }
 
 // NewPrometheusMetricSource creates a MetricSource backed by a Prometheus-compatible API.

@@ -40,6 +40,26 @@ spec:
           - --pubsub.request-path-url
           - "{{ .Values.ap.gcpPubSub.requestPathURL }}"
           {{- end}}
+          {{- if and .Values.ap.dispatchGate (ne .Values.ap.dispatchGate.type "noop") }}
+          - --dispatch-gate={{ .Values.ap.dispatchGate.type }}
+          {{- if .Values.ap.dispatchGate.prometheus.url }}
+          - --gate.prometheus.url={{ .Values.ap.dispatchGate.prometheus.url }}
+          {{- end }}
+          {{- if .Values.ap.dispatchGate.prometheus.insecureSkipVerify }}
+          - --gate.prometheus.insecure-skip-verify=true
+          {{- end }}
+          {{- if eq .Values.ap.dispatchGate.type "metric-saturation" }}
+          {{- if .Values.ap.dispatchGate.saturation.inferencePool }}
+          - --gate.saturation.inference-pool={{ .Values.ap.dispatchGate.saturation.inferencePool }}
+          {{- end }}
+          - --gate.saturation.threshold={{ .Values.ap.dispatchGate.saturation.threshold | default 0.8 }}
+          {{- end }}
+          {{- if eq .Values.ap.dispatchGate.type "metric-avg-queue-size" }}
+          {{- if .Values.ap.dispatchGate.avgQueueSize.modelName }}
+          - --gate.prometheus.model-name={{ .Values.ap.dispatchGate.avgQueueSize.modelName }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
           - --metrics-endpoint-auth={{ .Values.ap.metrics.secure }}
         image: "{{ .Values.ap.image.repository }}:{{ .Values.ap.image.tag }}"
         imagePullPolicy: "{{ .Values.ap.imagePullPolicy }}"

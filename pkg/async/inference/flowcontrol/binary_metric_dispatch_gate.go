@@ -31,6 +31,7 @@ var gmpProjectID = flag.String("gate.pmetric.gmp.project-id", "", "Project ID fo
 var prometheusQueryModelName = flag.String("gate.prometheus.model-name", "", "metrics name to use for avg_queue_size")
 var saturationInferencePool = flag.String("gate.saturation.inference-pool", "", "inference pool name for saturation metric")
 var saturationThreshold = flag.Float64("gate.saturation.threshold", 0.8, "saturation threshold above which budget is zero")
+var promInsecureSkipVerify = flag.Bool("gate.prometheus.insecure-skip-verify", false, "Skip TLS certificate verification for Prometheus (for self-signed certs)")
 
 // BinaryMetricDispatchGate implements DispatchGate using a MetricSource.
 // It returns 0.0 (no capacity) if the metric value is non-zero,
@@ -80,6 +81,15 @@ func (g *BinaryMetricDispatchGate) Budget(ctx context.Context) float64 {
 	return 0.0
 }
 
+// prometheusClientConfig builds an api.Config from flags, optionally skipping TLS verification.
+func prometheusClientConfig() api.Config {
+	cfg := api.Config{Address: *prometheusURL}
+	if *promInsecureSkipVerify {
+		cfg.RoundTripper = InsecureSkipVerifyTransport()
+	}
+	return cfg
+}
+
 func AverageQueueSizeGate() *BinaryMetricDispatchGate {
 	metricName := "inference_pool_average_queue_size"
 	labels := map[string]string{"name": *prometheusQueryModelName}
@@ -92,7 +102,5 @@ func AverageQueueSizeGate() *BinaryMetricDispatchGate {
 		return NewBinaryMetricDispatchGateWithSource(source, metricName, labels)
 	}
 
-	return NewBinaryMetricDispatchGate(api.Config{
-		Address: *prometheusURL,
-	}, metricName, labels)
+	return NewBinaryMetricDispatchGate(prometheusClientConfig(), metricName, labels)
 }

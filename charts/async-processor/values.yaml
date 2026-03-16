@@ -22,6 +22,14 @@ ap:
      port: 6379
      host: "redis-master.redis.svc.cluster.local"
      requestPathURL: "/v1/completions"
-  
 
-
+  dispatchGate:
+    type: "noop"
+    prometheus:
+      url: ""
+      insecureSkipVerify: false
+    saturation:
+      inferencePool: ""
+      threshold: 0.8
+    avgQueueSize:
+      modelName: ""
