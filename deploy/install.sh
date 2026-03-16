@@ -47,14 +47,12 @@ SATURATION_INFERENCE_POOL=${SATURATION_INFERENCE_POOL:-""}
 SATURATION_THRESHOLD=${SATURATION_THRESHOLD:-""}
 AVG_QUEUE_SIZE_MODEL_NAME=${AVG_QUEUE_SIZE_MODEL_NAME:-""}
 
+# Redis implementation override (redis-pubsub or redis-sortedset-gated)
+REDIS_IMPL=${REDIS_IMPL:-""}
+
 # GAIE/EPP Image Override (optional, to use a custom-built EPP image)
 GAIE_IMAGE=${GAIE_IMAGE:-""}
 
-# Real vLLM on CPU (instead of llm-d-inference-sim)
-USE_REAL_VLLM=${USE_REAL_VLLM:-"false"}
-VLLM_CPU_IMAGE=${VLLM_CPU_IMAGE:-"vllm/vllm-cpu-env:latest"}
-VLLM_CPU_MODEL=${VLLM_CPU_MODEL:-"facebook/opt-125m"}
-VLLM_CPU_MAX_MODEL_LEN=${VLLM_CPU_MAX_MODEL_LEN:-"512"}
 
 # Redis Configuration
 REDIS_RELEASE_NAME=${REDIS_RELEASE_NAME:-"redis"}
@@ -443,6 +441,11 @@ deploy_ap_controller() {
         HELM_SETS+=(--set ap.dispatchGate.avgQueueSize.modelName=$AVG_QUEUE_SIZE_MODEL_NAME)
     fi
 
+    # Redis implementation override
+    if [ -n "$REDIS_IMPL" ]; then
+        HELM_SETS+=(--set ap.redis.impl=$REDIS_IMPL)
+    fi
+
     helm upgrade -i "$AP_RELEASE_NAME" ${AP_PROJECT}/charts/async-processor \
         -n $AP_NS \
         --values $VALUES_FILE \
@@ -515,19 +518,8 @@ deploy_llm_d_infrastructure() {
         yq eval '.modelArtifacts.size = "30Gi"' -i "$LLM_D_MODELSERVICE_VALUES"
     fi
 
-    # Configure backend: real vLLM on CPU, simulator, or default image
-    if [ "$USE_REAL_VLLM" == "true" ]; then
-      log_info "Deploying real vLLM on CPU with model: $VLLM_CPU_MODEL"
-        yq eval ".modelArtifacts.uri = \"hf://$VLLM_CPU_MODEL\" | \
-                 .modelArtifacts.name = \"$VLLM_CPU_MODEL\" | \
-                 .modelArtifacts.size = \"5Gi\" | \
-                 .decode.containers[0].image = \"$VLLM_CPU_IMAGE\" | \
-                 .prefill.containers[0].image = \"$VLLM_CPU_IMAGE\" | \
-                 .decode.containers[0].args = [\"--model\", \"/models\", \"--device\", \"cpu\", \"--dtype\", \"float32\", \"--max-model-len\", \"$VLLM_CPU_MAX_MODEL_LEN\", \"--enforce-eager\"] | \
-                 .prefill.containers[0].args = [\"--model\", \"/models\", \"--device\", \"cpu\", \"--dtype\", \"float32\", \"--max-model-len\", \"$VLLM_CPU_MAX_MODEL_LEN\", \"--enforce-eager\"] | \
-                 .prefill.replicas = 0" \
-                 -i "$LLM_D_MODELSERVICE_VALUES"
-    elif [ "$DEPLOY_LLM_D_INFERENCE_SIM" == "true" ]; then
+    # Configure llm-d-inference-simulator if needed
+    if [ "$DEPLOY_LLM_D_INFERENCE_SIM" == "true" ]; then
       log_info "Deploying llm-d-inference-simulator..."
         yq eval ".decode.containers[0].image = \"$LLM_D_INFERENCE_SIM_IMG_REPO:$LLM_D_INFERENCE_SIM_IMG_TAG\" | \
                  .prefill.containers[0].image = \"$LLM_D_INFERENCE_SIM_IMG_REPO:$LLM_D_INFERENCE_SIM_IMG_TAG\" | \
@@ -544,6 +536,23 @@ deploy_llm_d_infrastructure() {
       yq eval ".decode.containers[0].args += [\"--max-num-seqs=$VLLM_MAX_NUM_SEQS\"]" -i "$LLM_D_MODELSERVICE_VALUES"
     fi
 
+    # Configure GAIE/EPP values before helmfile apply
+    local GAIE_VALUES_FILE="$EXAMPLE_DIR/gaie-${WELL_LIT_PATH_NAME}/values.yaml"
+    if [ -f "$GAIE_VALUES_FILE" ]; then
+        # Override EPP image if specified
+        if [ -n "$GAIE_IMAGE" ]; then
+            log_info "Configuring EPP to use custom image: $GAIE_IMAGE"
+            local GAIE_IMAGE_NAME="${GAIE_IMAGE%%:*}"
+            local GAIE_IMAGE_TAG="${GAIE_IMAGE##*:}"
+            yq eval ".inferenceExtension.image.hub = \"\"" -i "$GAIE_VALUES_FILE"
+            yq eval ".inferenceExtension.image.name = \"$GAIE_IMAGE_NAME\"" -i "$GAIE_VALUES_FILE"
+            yq eval ".inferenceExtension.image.tag = \"$GAIE_IMAGE_TAG\"" -i "$GAIE_VALUES_FILE"
+            yq eval ".inferenceExtension.image.pullPolicy = \"IfNotPresent\"" -i "$GAIE_VALUES_FILE"
+        fi
+    else
+        log_warning "GAIE values file not found at $GAIE_VALUES_FILE"
+    fi
+
     # Deploy llm-d core components
     log_info "Deploying llm-d core components"
     helmfile apply -e $GATEWAY_PROVIDER -n ${LLMD_NS}
@@ -558,13 +567,18 @@ deploy_llm_d_infrastructure() {
         -p '{"spec":{"kube":{"service":{"type":"NodePort"}}}}'
     fi
 
-    # Override GAIE/EPP image if specified
-    if [ -n "$GAIE_IMAGE" ]; then
+    # Enable flow control feature gate in EPP config for saturation dispatch gate
+    if [ "$DISPATCH_GATE_TYPE" = "metric-saturation" ]; then
+        local GAIE_CONFIGMAP="gaie-${RELEASE_NAME_POSTFIX:-sim}-epp"
+        log_info "Enabling flowControl feature gate in EPP configmap '$GAIE_CONFIGMAP'"
+        local EPP_CONFIG=$(kubectl get configmap "$GAIE_CONFIGMAP" -n $LLMD_NS -o jsonpath='{.data.default-plugins\.yaml}')
+        local UPDATED_CONFIG=$(echo "$EPP_CONFIG" | yq eval '.featureGates = ["flowControl"]' -)
+        kubectl patch configmap "$GAIE_CONFIGMAP" -n $LLMD_NS \
+            --type='merge' \
+            -p "{\"data\":{\"default-plugins.yaml\":$(echo "$UPDATED_CONFIG" | jq -Rs .)}}"
+        # Restart EPP to pick up the new config
         local GAIE_DEPLOYMENT="gaie-${RELEASE_NAME_POSTFIX:-sim}-epp"
-        log_info "Patching GAIE/EPP deployment '$GAIE_DEPLOYMENT' with image: $GAIE_IMAGE"
-        kubectl set image "deployment/$GAIE_DEPLOYMENT" \
-            epp="$GAIE_IMAGE" \
-            -n $LLMD_NS
+        kubectl rollout restart "deployment/$GAIE_DEPLOYMENT" -n $LLMD_NS
     fi
 
     log_info "Waiting for llm-d components to initialize..."
@@ -665,26 +679,39 @@ print_summary() {
     echo "Next Steps:"
     echo "==========="
     echo ""
-    echo "1. Check VariantAutoscaling status:"
-    echo "   kubectl get variantautoscaling -n $LLMD_NS"
-    echo ""
-    echo "2. View detailed status with conditions:"
-    echo "   kubectl describe variantautoscaling $LLM_D_MODELSERVICE_NAME-decode -n $LLMD_NS"
-    echo ""
-    echo "3. View AP logs:"
+    echo "1. View AP logs:"
     echo "   kubectl logs -n $AP_NS -l app.kubernetes.io/name=async-processor -f"
     echo ""
-    echo "4. Check external metrics API:"
-    echo "   kubectl get --raw \"/apis/external.metrics.k8s.io/v1beta1/namespaces/$LLMD_NS/inferno_desired_replicas\" | jq"
+    echo "2. Check all pods in llm-d namespace:"
+    echo "   kubectl get pods -n $LLMD_NS"
     echo ""
-    echo "5. Port-forward Prometheus to view metrics:"
+    if [ -n "$DISPATCH_GATE_TYPE" ] && [ "$DISPATCH_GATE_TYPE" != "noop" ]; then
+    echo "3. Check dispatch gate metric in Prometheus:"
+    echo "   kubectl port-forward -n $MONITORING_NAMESPACE svc/${PROMETHEUS_SVC_NAME} ${PROMETHEUS_PORT}:${PROMETHEUS_PORT} &"
+    if [ "$DISPATCH_GATE_TYPE" = "metric-saturation" ]; then
+    echo "   curl -sk 'https://localhost:${PROMETHEUS_PORT}/api/v1/query?query=inference_extension_flow_control_pool_saturation' | jq ."
+    echo ""
+    echo "4. Check EPP is exposing the saturation metric:"
+    echo "   kubectl port-forward -n $LLMD_NS svc/gaie-${RELEASE_NAME_POSTFIX:-sim}-epp 9002:9002 &"
+    echo "   curl -s http://localhost:9002/metrics | grep inference_extension_flow_control_pool_saturation"
+    elif [ "$DISPATCH_GATE_TYPE" = "metric-avg-queue-size" ]; then
+    echo "   curl -sk 'https://localhost:${PROMETHEUS_PORT}/api/v1/query?query=inference_pool_average_queue_size' | jq ."
+    fi
+    echo ""
+    else
+    echo "3. Port-forward Prometheus to view metrics:"
     echo "   kubectl port-forward -n $MONITORING_NAMESPACE svc/${PROMETHEUS_SVC_NAME} ${PROMETHEUS_PORT}:${PROMETHEUS_PORT}"
     echo "   # Then visit https://localhost:${PROMETHEUS_PORT}"
+    echo ""
+    echo "4. Check VariantAutoscaling status:"
+    echo "   kubectl get variantautoscaling -n $LLMD_NS"
+    echo ""
+    fi
     echo ""
     echo "Important Notes:"
     echo "================"
     echo ""
-    if  ! containsElement "$ENVIRONMENT" "${NON_EMULATED_ENV_LIST[@]}"; then
+    if ! containsElement "$ENVIRONMENT" "${NON_EMULATED_ENV_LIST[@]}"; then
         echo "• This deployment uses the llm-d inference simulator without real GPUs"
         echo "• The llm-d inference simulator generates synthetic metrics for testing"
     else

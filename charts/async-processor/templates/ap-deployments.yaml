@@ -28,11 +28,19 @@ spec:
         args:
           - --igw-base-url={{ .Values.ap.igwBaseURL }}
           {{- if .Values.ap.redis.enabled }}
-          - --message-queue-impl=redis-pubsub
+          - --message-queue-impl={{ .Values.ap.redis.impl | default "redis-pubsub" }}
+          {{- if eq (.Values.ap.redis.impl | default "redis-pubsub") "redis-sortedset-gated" }}
+          - --redis.ss.addr={{ .Values.ap.redis.host }}:{{ .Values.ap.redis.port }}
+          - --redis.ss.request-queue-name={{ .Values.ap.redis.sortedSet.requestQueueName | default "request-sortedset" }}
+          - --redis.ss.result-queue-name={{ .Values.ap.redis.sortedSet.resultQueueName | default "result-list" }}
+          - --redis.ss.poll-interval-ms={{ .Values.ap.redis.sortedSet.pollIntervalMs | default 1000 }}
+          - --redis.ss.batch-size={{ .Values.ap.redis.sortedSet.batchSize | default 10 }}
+          {{- else }}
           - --redis.request-path-url
           - "{{ .Values.ap.redis.requestPathURL }}"
           - --redis.addr
           - "{{ .Values.ap.redis.host }}:{{ .Values.ap.redis.port }}"
+          {{- end }}
           {{- else if .Values.gcpPubSub.enabled  }}
           - --message-queue-impl=gcp-pubsub
           - pubsub.request-subscriber-id={{ .Values.ap.gcpPubSub.requestSubscriberId }}

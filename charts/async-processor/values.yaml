@@ -19,9 +19,15 @@ ap:
 
   redis:
      enabled: true
+     impl: "redis-pubsub"  # redis-pubsub or redis-sortedset-gated
      port: 6379
      host: "redis-master.redis.svc.cluster.local"
      requestPathURL: "/v1/completions"
+     sortedSet:
+       requestQueueName: "request-sortedset"
+       resultQueueName: "result-list"
+       pollIntervalMs: 1000
+       batchSize: 10
 
   dispatchGate:
     type: "noop"
