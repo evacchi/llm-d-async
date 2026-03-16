@@ -29,6 +29,14 @@ DEPLOY_LLM_D ?= true
 DEPLOY_REDIS ?= true
 DELETE_CLUSTER ?= false
 DELETE_NAMESPACES ?= false
+DISPATCH_GATE_TYPE ?=
+SATURATION_INFERENCE_POOL ?=
+SATURATION_THRESHOLD ?=
+AVG_QUEUE_SIZE_MODEL_NAME ?=
+GAIE_IMAGE ?=
+USE_REAL_VLLM ?= false
+VLLM_CPU_IMAGE ?= vllm/vllm-cpu-env:latest
+VLLM_CPU_MODEL ?= facebook/opt-125m
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -100,6 +108,8 @@ destroy-kind-cluster:
 deploy-ap-emulated-on-kind:
 	@echo ">>> Deploying async processor (cluster args: $(KIND_ARGS), image: $(IMG))"
 	KIND=$(KIND) KUBECTL=$(KUBECTL) IMG=$(IMG) DEPLOY_REDIS=$(DEPLOY_REDIS) DEPLOY_LLM_D=$(DEPLOY_LLM_D) ENVIRONMENT=kind-emulator CREATE_CLUSTER=$(CREATE_CLUSTER) CLUSTER_GPU_TYPE=$(CLUSTER_GPU_TYPE) CLUSTER_NODES=$(CLUSTER_NODES) CLUSTER_GPUS=$(CLUSTER_GPUS) NAMESPACE_SCOPED=false \
+		DISPATCH_GATE_TYPE=$(DISPATCH_GATE_TYPE) SATURATION_INFERENCE_POOL=$(SATURATION_INFERENCE_POOL) SATURATION_THRESHOLD=$(SATURATION_THRESHOLD) AVG_QUEUE_SIZE_MODEL_NAME=$(AVG_QUEUE_SIZE_MODEL_NAME) \
+		GAIE_IMAGE=$(GAIE_IMAGE) USE_REAL_VLLM=$(USE_REAL_VLLM) VLLM_CPU_IMAGE=$(VLLM_CPU_IMAGE) VLLM_CPU_MODEL=$(VLLM_CPU_MODEL) \
 		deploy/install.sh
 
 ## Undeploy Async Processor from the emulated environment on Kind.
@@ -114,7 +124,10 @@ undeploy-ap-emulated-on-kind:
 deploy-ap-on-k8s: kustomize ## Deploy AP on Kubernetes with the specified image.
 	@echo "Deploying AP on Kubernetes with image: $(IMG)"
 	@echo "Target namespace: $(or $(NAMESPACE),async-processor-system)"
-	NAMESPACE=$(or $(NAMESPACE),async-processor-system) IMG=$(IMG) ENVIRONMENT=kubernetes DEPLOY_LLM_D=$(DEPLOY_LLM_D) ./deploy/install.sh
+	NAMESPACE=$(or $(NAMESPACE),async-processor-system) IMG=$(IMG) ENVIRONMENT=kubernetes DEPLOY_LLM_D=$(DEPLOY_LLM_D) \
+		DISPATCH_GATE_TYPE=$(DISPATCH_GATE_TYPE) SATURATION_INFERENCE_POOL=$(SATURATION_INFERENCE_POOL) SATURATION_THRESHOLD=$(SATURATION_THRESHOLD) AVG_QUEUE_SIZE_MODEL_NAME=$(AVG_QUEUE_SIZE_MODEL_NAME) \
+		GAIE_IMAGE=$(GAIE_IMAGE) USE_REAL_VLLM=$(USE_REAL_VLLM) VLLM_CPU_IMAGE=$(VLLM_CPU_IMAGE) VLLM_CPU_MODEL=$(VLLM_CPU_MODEL) \
+		./deploy/install.sh
 
 ## Undeploy AP from Kubernetes.
 .PHONY: undeploy-ap-on-k8s

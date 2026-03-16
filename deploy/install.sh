@@ -47,6 +47,15 @@ SATURATION_INFERENCE_POOL=${SATURATION_INFERENCE_POOL:-""}
 SATURATION_THRESHOLD=${SATURATION_THRESHOLD:-""}
 AVG_QUEUE_SIZE_MODEL_NAME=${AVG_QUEUE_SIZE_MODEL_NAME:-""}
 
+# GAIE/EPP Image Override (optional, to use a custom-built EPP image)
+GAIE_IMAGE=${GAIE_IMAGE:-""}
+
+# Real vLLM on CPU (instead of llm-d-inference-sim)
+USE_REAL_VLLM=${USE_REAL_VLLM:-"false"}
+VLLM_CPU_IMAGE=${VLLM_CPU_IMAGE:-"vllm/vllm-cpu-env:latest"}
+VLLM_CPU_MODEL=${VLLM_CPU_MODEL:-"facebook/opt-125m"}
+VLLM_CPU_MAX_MODEL_LEN=${VLLM_CPU_MAX_MODEL_LEN:-"512"}
+
 # Redis Configuration
 REDIS_RELEASE_NAME=${REDIS_RELEASE_NAME:-"redis"}
 
@@ -506,8 +515,19 @@ deploy_llm_d_infrastructure() {
         yq eval '.modelArtifacts.size = "30Gi"' -i "$LLM_D_MODELSERVICE_VALUES"
     fi
 
-    # Configure llm-d-inference-simulator if needed
-    if [ "$DEPLOY_LLM_D_INFERENCE_SIM" == "true" ]; then
+    # Configure backend: real vLLM on CPU, simulator, or default image
+    if [ "$USE_REAL_VLLM" == "true" ]; then
+      log_info "Deploying real vLLM on CPU with model: $VLLM_CPU_MODEL"
+        yq eval ".modelArtifacts.uri = \"hf://$VLLM_CPU_MODEL\" | \
+                 .modelArtifacts.name = \"$VLLM_CPU_MODEL\" | \
+                 .modelArtifacts.size = \"5Gi\" | \
+                 .decode.containers[0].image = \"$VLLM_CPU_IMAGE\" | \
+                 .prefill.containers[0].image = \"$VLLM_CPU_IMAGE\" | \
+                 .decode.containers[0].args = [\"--model\", \"/models\", \"--device\", \"cpu\", \"--dtype\", \"float32\", \"--max-model-len\", \"$VLLM_CPU_MAX_MODEL_LEN\", \"--enforce-eager\"] | \
+                 .prefill.containers[0].args = [\"--model\", \"/models\", \"--device\", \"cpu\", \"--dtype\", \"float32\", \"--max-model-len\", \"$VLLM_CPU_MAX_MODEL_LEN\", \"--enforce-eager\"] | \
+                 .prefill.replicas = 0" \
+                 -i "$LLM_D_MODELSERVICE_VALUES"
+    elif [ "$DEPLOY_LLM_D_INFERENCE_SIM" == "true" ]; then
       log_info "Deploying llm-d-inference-simulator..."
         yq eval ".decode.containers[0].image = \"$LLM_D_INFERENCE_SIM_IMG_REPO:$LLM_D_INFERENCE_SIM_IMG_TAG\" | \
                  .prefill.containers[0].image = \"$LLM_D_INFERENCE_SIM_IMG_REPO:$LLM_D_INFERENCE_SIM_IMG_TAG\" | \
@@ -537,7 +557,16 @@ deploy_llm_d_infrastructure() {
         --type='merge' \
         -p '{"spec":{"kube":{"service":{"type":"NodePort"}}}}'
     fi
-    
+
+    # Override GAIE/EPP image if specified
+    if [ -n "$GAIE_IMAGE" ]; then
+        local GAIE_DEPLOYMENT="gaie-${RELEASE_NAME_POSTFIX:-sim}-epp"
+        log_info "Patching GAIE/EPP deployment '$GAIE_DEPLOYMENT' with image: $GAIE_IMAGE"
+        kubectl set image "deployment/$GAIE_DEPLOYMENT" \
+            epp="$GAIE_IMAGE" \
+            -n $LLMD_NS
+    fi
+
     log_info "Waiting for llm-d components to initialize..."
     kubectl wait --for=condition=Available deployment --all -n $LLMD_NS --timeout=30s || \
         log_warning "llm-d components are not ready yet - check 'kubectl get pods -n $LLMD_NS'"

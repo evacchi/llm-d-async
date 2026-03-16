@@ -35,6 +35,7 @@ AP_NS=${AP_NS:-"async-processor-system"}
 # AP Configuration
 SKIP_TLS_VERIFY=true  # Skip TLS verification in emulated environments
 AP_LOG_LEVEL="debug" # AP log level set to debug for emulated environments
+SATURATION_INFERENCE_POOL=${SATURATION_INFERENCE_POOL:-"gaie-sim"}
 
 # llm-d Configuration
 LLM_D_INFERENCE_SIM_IMG_REPO=${LLM_D_INFERENCE_SIM_IMG_REPO:-"ghcr.io/llm-d/llm-d-inference-sim"}
