@@ -537,14 +537,22 @@ deploy_llm_d_infrastructure() {
     fi
 
     # Configure GAIE/EPP values before helmfile apply
-    local GAIE_VALUES_FILE="$EXAMPLE_DIR/gaie-${WELL_LIT_PATH_NAME}/values.yaml"
+    local GAIE_VALUES_FILE="$EXAMPLE_DIR/gaie-${RELEASE_NAME_POSTFIX:-${WELL_LIT_PATH_NAME}}/values.yaml"
     if [ -f "$GAIE_VALUES_FILE" ]; then
         # Override EPP image if specified
         if [ -n "$GAIE_IMAGE" ]; then
             log_info "Configuring EPP to use custom image: $GAIE_IMAGE"
-            local GAIE_IMAGE_NAME="${GAIE_IMAGE%%:*}"
+            local GAIE_IMAGE_REF="${GAIE_IMAGE%%:*}"
             local GAIE_IMAGE_TAG="${GAIE_IMAGE##*:}"
-            yq eval ".inferenceExtension.image.hub = \"\"" -i "$GAIE_VALUES_FILE"
+            # Split into hub and name; if there's no '/' it's a local image (docker.io/library)
+            if [[ "$GAIE_IMAGE_REF" == *"/"* ]]; then
+                local GAIE_IMAGE_HUB="${GAIE_IMAGE_REF%/*}"
+                local GAIE_IMAGE_NAME="${GAIE_IMAGE_REF##*/}"
+            else
+                local GAIE_IMAGE_HUB="docker.io/library"
+                local GAIE_IMAGE_NAME="$GAIE_IMAGE_REF"
+            fi
+            yq eval ".inferenceExtension.image.hub = \"$GAIE_IMAGE_HUB\"" -i "$GAIE_VALUES_FILE"
             yq eval ".inferenceExtension.image.name = \"$GAIE_IMAGE_NAME\"" -i "$GAIE_VALUES_FILE"
             yq eval ".inferenceExtension.image.tag = \"$GAIE_IMAGE_TAG\"" -i "$GAIE_VALUES_FILE"
             yq eval ".inferenceExtension.image.pullPolicy = \"IfNotPresent\"" -i "$GAIE_VALUES_FILE"
