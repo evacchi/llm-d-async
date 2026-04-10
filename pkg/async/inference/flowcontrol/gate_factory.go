@@ -58,7 +58,20 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (asy
 		return ConstOpenGate(), nil
 
 	case "redis":
-		return f.createRedisGate(params)
+		addr := params["address"]
+		if addr == "" {
+			return nil, fmt.Errorf("redis gate requires an 'address' in gate_params")
+		}
+		client, ok := f.redisClients[addr]
+		if !ok {
+			client = goredis.NewClient(&goredis.Options{Addr: addr})
+			f.redisClients[addr] = client
+		}
+		budgetKey := params["budget_key"]
+		if budgetKey == "" {
+			budgetKey = "dispatch-gate-budget"
+		}
+		return redisgate.NewRedisDispatchGate(client, budgetKey), nil
 
 	case "prometheus-saturation":
 		if f.prometheusURL == "" {
