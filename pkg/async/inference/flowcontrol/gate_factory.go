@@ -18,7 +18,6 @@ package flowcontrol
 
 import (
 	"fmt"
-	"strconv"
 
 	asyncapi "github.com/llm-d-incubation/llm-d-async/pkg/async/api"
 	redisgate "github.com/llm-d-incubation/llm-d-async/pkg/redis"
@@ -58,20 +57,7 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (asy
 		return ConstOpenGate(), nil
 
 	case "redis":
-		addr := params["address"]
-		if addr == "" {
-			return nil, fmt.Errorf("redis gate requires an 'address' in gate_params")
-		}
-		client, ok := f.redisClients[addr]
-		if !ok {
-			client = goredis.NewClient(&goredis.Options{Addr: addr})
-			f.redisClients[addr] = client
-		}
-		budgetKey := params["budget_key"]
-		if budgetKey == "" {
-			budgetKey = "dispatch-gate-budget"
-		}
-		return redisgate.NewRedisDispatchGate(client, budgetKey), nil
+		return f.createRedisGate(params)
 
 	case "prometheus-saturation":
 		if f.prometheusURL == "" {
@@ -115,50 +101,14 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (asy
 		if f.prometheusURL == "" {
 			return nil, fmt.Errorf("prometheus-budget gate type requires --prometheus-url flag to be set")
 		}
-
-		pool := params["pool"]
-
-		baseline := 0.05 // default baseline reserve
-		if baselineStr := params["baseline"]; baselineStr != "" {
-			b, err := strconv.ParseFloat(baselineStr, 64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid baseline value '%s': %w", baselineStr, err)
-			}
-			baseline = b
-		}
-
-		fallback := 0.0 // default fallback budget (fail closed)
-		if fallbackStr := params["fallback"]; fallbackStr != "" {
-			fb, err := strconv.ParseFloat(fallbackStr, 64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid fallback value '%s': %w", fallbackStr, err)
-			}
-			fallback = fb
-		}
-
-		sysQueryExpr := params["sys_query"]
-		if sysQueryExpr == "" {
-			labels := map[string]string{}
-			if pool != "" {
-				labels["inference_pool"] = pool
-			}
-			sysQueryExpr = buildPromQL("inference_extension_flow_control_pool_saturation", labels)
-		}
-
-		sysSource, err := NewPromQLMetricSource(promapi.Config{Address: f.prometheusURL}, sysQueryExpr)
+		source, fallback, err := createBudgetPromQLSource(
+			promapi.Config{Address: f.prometheusURL},
+			params["pool"], params["max_sys"], params["baseline"], params["fallback"], params["query"],
+		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create system metric source: %w", err)
+			return nil, err
 		}
-
-		var eppSource MetricSource
-		if eppQueryExpr := params["epp_query"]; eppQueryExpr != "" {
-			eppSource, err = NewPromQLMetricSource(promapi.Config{Address: f.prometheusURL}, eppQueryExpr)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create EPP metric source: %w", err)
-			}
-		}
-
-		return NewBudgetDispatchGate(sysSource, eppSource, baseline, fallback), nil
+		return NewBudgetDispatchGate(source, fallback), nil
 
 	default:
 		// Unknown gate types default to open gate
