@@ -44,6 +44,7 @@ var (
 	redisPort   string = env.GetEnvString("E2E_INTEGRATION_REDIS_PORT", "30480", ginkgo.GinkgoLogr)
 	promPort    string = env.GetEnvString("E2E_INTEGRATION_PROM_PORT", "30491", ginkgo.GinkgoLogr)
 	simPort     string = env.GetEnvString("E2E_INTEGRATION_SIM_PORT", "30490", ginkgo.GinkgoLogr)
+	envoyPort   string = env.GetEnvString("E2E_INTEGRATION_ENVOY_PORT", "30492", ginkgo.GinkgoLogr)
 
 	containerRuntime = env.GetEnvString("CONTAINER_TOOL", env.GetEnvString("CONTAINER_RUNTIME", "docker", ginkgo.GinkgoLogr), ginkgo.GinkgoLogr)
 	apImage          = env.GetEnvString("AP_IMAGE", "ghcr.io/llm-d-incubation/async-processor:e2e-test", ginkgo.GinkgoLogr)
@@ -54,9 +55,10 @@ var (
 
 	testConfig *testutils.TestConfig
 
-	rdb        *redis.Client
-	promURL    string
+	rdb         *redis.Client
+	promURL     string
 	simAdminURL string
+	envoyURL    string
 )
 
 func TestIntegration(t *testing.T) {
@@ -106,6 +108,7 @@ func setupK8sCluster() {
 		cfg := strings.ReplaceAll(kindClusterConfig, "${REDIS_PORT}", redisPort)
 		cfg = strings.ReplaceAll(cfg, "${PROM_PORT}", promPort)
 		cfg = strings.ReplaceAll(cfg, "${SIM_PORT}", simPort)
+		cfg = strings.ReplaceAll(cfg, "${ENVOY_PORT}", envoyPort)
 		_, err := io.WriteString(stdin, cfg)
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 	}()
@@ -141,6 +144,13 @@ func setupK8sCluster() {
 	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 	gomega.Eventually(session).WithTimeout(300 * time.Second).Should(gexec.Exit(0))
 	kindLoadImage("redis:7-alpine")
+
+	ginkgo.By("Pulling docker.io/envoyproxy/envoy:distroless-v1.33.2")
+	command = exec.Command(containerRuntime, "pull", "docker.io/envoyproxy/envoy:distroless-v1.33.2")
+	session, err = gexec.Start(command, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Eventually(session).WithTimeout(300 * time.Second).Should(gexec.Exit(0))
+	kindLoadImage("docker.io/envoyproxy/envoy:distroless-v1.33.2")
 
 	ginkgo.By("Pulling prom/prometheus:v2.53.0")
 	command = exec.Command(containerRuntime, "pull", "prom/prometheus:v2.53.0")
@@ -205,13 +215,38 @@ func applyManifests() {
 	ginkgo.By("Applying Prometheus manifest")
 	kubectlApplyFile(prometheusManifest, nil)
 
+	ginkgo.By("Applying Envoy manifest")
+	envoyManifest := filepath.Join(gaieRoot, "test", "testdata", "envoy.yaml")
+	kubectlApplyFileInNamespace(envoyManifest, nsName, map[string]string{
+		"$E2E_NS":            nsName,
+		"vllm-qwen3-32b-epp": "epp-svc",
+	})
+	// Patch Envoy service to NodePort so test code can reach it for probe requests.
+	kubectlPatchEnvoyNodePort()
+
 	ginkgo.By("Applying async-processor manifest")
 	kubectlApplyFile(asyncProcessorManifest, map[string]string{"${AP_IMAGE}": apImage})
+}
+
+// kubectlPatchEnvoyNodePort patches the Envoy service to NodePort so test code
+// outside the cluster can reach it for probe requests.
+func kubectlPatchEnvoyNodePort() {
+	patch := fmt.Sprintf(`{"spec":{"type":"NodePort","ports":[{"name":"http-8081","port":8081,"targetPort":8081,"nodePort":%s}]}}`, envoyPort)
+	command := exec.Command("kubectl", "--context", "kind-"+kindClusterName,
+		"-n", nsName, "patch", "service", "envoy",
+		"--type=merge", "--patch", patch)
+	session, err := gexec.Start(command, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
+	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
+	gomega.Eventually(session).WithTimeout(30 * time.Second).Should(gexec.Exit(0))
 }
 
 // kubectlApplyFile applies a YAML manifest via kubectl, optionally substituting
 // template variables. Uses stdin to avoid temp files.
 func kubectlApplyFile(path string, substitutions map[string]string) {
+	kubectlApplyFileInNamespace(path, "", substitutions)
+}
+
+func kubectlApplyFileInNamespace(path, namespace string, substitutions map[string]string) {
 	content, err := os.ReadFile(path)
 	gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "reading manifest %s", path)
 
@@ -220,7 +255,13 @@ func kubectlApplyFile(path string, substitutions map[string]string) {
 		yaml = strings.ReplaceAll(yaml, k, v)
 	}
 
-	command := exec.Command("kubectl", "--context", "kind-"+kindClusterName, "apply", "-f", "-")
+	args := []string{"--context", "kind-" + kindClusterName, "apply"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	args = append(args, "-f", "-")
+
+	command := exec.Command("kubectl", args...)
 	command.Stdin = strings.NewReader(yaml)
 	session, err := gexec.Start(command, ginkgo.GinkgoWriter, ginkgo.GinkgoWriter)
 	gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
@@ -228,8 +269,9 @@ func kubectlApplyFile(path string, substitutions map[string]string) {
 }
 
 func setupClients() {
-	promURL = "http://localhost:" + promPort
+	promURL     = "http://localhost:" + promPort
 	simAdminURL = "http://localhost:" + simPort
+	envoyURL    = "http://localhost:" + envoyPort
 
 	ginkgo.By("Creating Redis client on localhost:" + redisPort)
 	rdb = redis.NewClient(&redis.Options{Addr: "localhost:" + redisPort})
@@ -253,6 +295,16 @@ func setupClients() {
 			return err
 		}
 		return resp.Body.Close()
+	}, 60*time.Second, 2*time.Second).Should(gomega.Succeed())
+
+	ginkgo.By("Waiting for Envoy to be ready")
+	gomega.Eventually(func() error {
+		resp, err := http.Get(envoyURL + "/v1/completions")
+		if err != nil {
+			return err
+		}
+		resp.Body.Close() //nolint:errcheck
+		return nil
 	}, 60*time.Second, 2*time.Second).Should(gomega.Succeed())
 }
 
@@ -309,5 +361,8 @@ nodes:
     protocol: TCP
   - containerPort: 30490
     hostPort: ${SIM_PORT}
+    protocol: TCP
+  - containerPort: 30492
+    hostPort: ${ENVOY_PORT}
     protocol: TCP
 `

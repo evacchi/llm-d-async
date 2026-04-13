@@ -24,7 +24,7 @@ var _ = ginkgo.Describe("Saturation Metric Dispatch Gate Integration", func() {
 		setSimKvCache(simAdminURL, 0.0)
 
 		// Wait for EPP to reflect low saturation in Prometheus.
-		waitForSaturation(promURL, func(v float64) bool { return v < 0.5 })
+		waitForSaturation(promURL, envoyURL, func(v float64) bool { return v < 0.5 })
 
 		msg := makeRequestMessage("integration-low-sat", 5*time.Minute)
 		enqueueMessage(ctx, rdb, integrationRequestQueue, msg)
@@ -43,7 +43,7 @@ var _ = ginkgo.Describe("Saturation Metric Dispatch Gate Integration", func() {
 		setSimKvCache(simAdminURL, 1.0)
 
 		// Wait for saturation to propagate through EPP → Prometheus.
-		waitForSaturation(promURL, func(v float64) bool { return v >= 0.7 })
+		waitForSaturation(promURL, envoyURL, func(v float64) bool { return v >= 0.7 })
 
 		msg := makeRequestMessage("integration-high-sat", 5*time.Minute)
 		enqueueMessage(ctx, rdb, integrationRequestQueue, msg)
@@ -66,7 +66,7 @@ var _ = ginkgo.Describe("Saturation Metric Dispatch Gate Integration", func() {
 
 	ginkgo.It("resumes processing when KV cache drops", func() {
 		setSimKvCache(simAdminURL, 1.0)
-		waitForSaturation(promURL, func(v float64) bool { return v >= 0.7 })
+		waitForSaturation(promURL, envoyURL, func(v float64) bool { return v >= 0.7 })
 
 		for i := 1; i <= 3; i++ {
 			msg := makeRequestMessage(fmt.Sprintf("integration-resume-%d", i), 5*time.Minute)

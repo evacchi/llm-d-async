@@ -135,7 +135,6 @@ spec:
             - --config-file
             - /config/default-plugins.yaml
             - --metrics-endpoint-auth=false
-            - --secure-serving=false
           env:
             # Fallback env var in case featureGates in config is not supported.
             - name: ENABLE_EXPERIMENTAL_FLOW_CONTROL_LAYER

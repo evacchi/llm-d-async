@@ -81,11 +81,27 @@ func setSimKvCache(simAdminURL string, value float64) {
 	gomega.ExpectWithOffset(1, resp.StatusCode).To(gomega.BeElementOf(http.StatusOK, http.StatusNoContent))
 }
 
-// queryPromSaturation queries Prometheus for the EPP pool KV cache utilization metric,
-// which reflects the real saturation signal scraped from the sim by the EPP.
+// sendProbeRequest sends a minimal inference request through Envoy → EPP to trigger
+// the EPP's flow control admission controller, which records the saturation metric.
+func sendProbeRequest(envoyURL string) {
+	body := []byte(`{"model":"test-model","prompt":"probe"}`)
+	req, err := http.NewRequest(http.MethodPost, envoyURL+"/v1/completions", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close() //nolint:errcheck
+}
+
+// queryPromSaturation queries Prometheus for the EPP pool saturation metric,
+// which is recorded when requests flow through EPP's flow control admission layer.
 // Returns -1 if the metric is not yet available.
 func queryPromSaturation(promURL string) float64 {
-	query := `inference_pool_average_kv_cache_utilization{name="e2e-pool"}`
+	query := `inference_extension_flow_control_pool_saturation{inference_pool="e2e-pool"}`
 	resp, err := httpClient.Get(promURL + "/api/v1/query?query=" + query)
 	if err != nil {
 		return -1
@@ -114,8 +130,11 @@ func queryPromSaturation(promURL string) float64 {
 }
 
 // waitForSaturation polls Prometheus until pred is satisfied or the timeout elapses.
-func waitForSaturation(promURL string, pred func(float64) bool) {
+// It sends probe requests through Envoy on each poll to trigger EPP's flow control
+// admission controller, which records the saturation metric.
+func waitForSaturation(promURL, envoyURL string, pred func(float64) bool) {
 	gomega.EventuallyWithOffset(1, func() bool {
+		sendProbeRequest(envoyURL)
 		v := queryPromSaturation(promURL)
 		return v >= 0 && pred(v)
 	}, 60*time.Second, 2*time.Second).Should(gomega.BeTrue(), "waiting for saturation to satisfy condition")
