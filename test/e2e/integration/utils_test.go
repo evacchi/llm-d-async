@@ -18,6 +18,9 @@ import (
 const (
 	integrationRequestQueue = "integration-request-sortedset"
 	integrationResultQueue  = "integration-result-list"
+
+	budgetRequestQueue = "budget-request-sortedset"
+	budgetResultQueue  = "budget-result-list"
 )
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -127,6 +130,25 @@ func queryPromSaturation(promURL string) float64 {
 		return -1
 	}
 	return v
+}
+
+// waitForBudget is like waitForSaturation but uses the EPP saturation metric to infer
+// the approximate dispatch budget (D ≈ 1 - saturation - baseline).
+// pred receives the estimated budget value.
+func waitForBudget(promURL, envoyURL string, pred func(float64) bool) {
+	const baseline = 0.05
+	gomega.EventuallyWithOffset(1, func() bool {
+		sendProbeRequest(envoyURL)
+		sat := queryPromSaturation(promURL)
+		if sat < 0 {
+			return false
+		}
+		budget := 1.0 - sat - baseline
+		if budget < 0 {
+			budget = 0
+		}
+		return pred(budget)
+	}, 60*time.Second, 2*time.Second).Should(gomega.BeTrue(), "waiting for budget to satisfy condition")
 }
 
 // waitForSaturation polls Prometheus until pred is satisfied or the timeout elapses.

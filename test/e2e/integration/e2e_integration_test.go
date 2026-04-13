@@ -9,6 +9,81 @@ import (
 	"github.com/onsi/gomega"
 )
 
+var _ = ginkgo.Describe("Budget Metric Dispatch Gate Integration", func() {
+	var ctx context.Context
+
+	ginkgo.BeforeEach(func() {
+		ctx = context.Background()
+		rdb.Del(ctx, budgetRequestQueue) //nolint:errcheck
+		rdb.Del(ctx, budgetResultQueue)  //nolint:errcheck
+		// Start with low KV cache so budget is high and the gate is open.
+		setSimKvCache(simAdminURL, 0.0)
+	})
+
+	ginkgo.It("processes a message when dispatch budget is positive", func() {
+		setSimKvCache(simAdminURL, 0.0)
+		// Budget = 1 - saturation - 0.05; with saturation≈0, budget≈0.95 > 0.
+		waitForBudget(promURL, envoyURL, func(b float64) bool { return b > 0.5 })
+
+		msg := makeRequestMessage("budget-positive", 5*time.Minute)
+		enqueueMessage(ctx, rdb, budgetRequestQueue, msg)
+
+		gomega.Eventually(func() int64 {
+			return getResultCount(ctx, rdb, budgetResultQueue)
+		}, 60*time.Second, 1*time.Second).Should(gomega.BeNumerically(">=", 1))
+
+		result := popResult(ctx, rdb, budgetResultQueue)
+		gomega.Expect(result).NotTo(gomega.BeNil())
+		gomega.Expect(result.Id).To(gomega.Equal("budget-positive"))
+	})
+
+	ginkgo.It("blocks messages when dispatch budget is zero", func() {
+		// KV cache at 100% → saturation high → budget ≤ 0 → gate closed.
+		setSimKvCache(simAdminURL, 1.0)
+		waitForBudget(promURL, envoyURL, func(b float64) bool { return b <= 0 })
+
+		msg := makeRequestMessage("budget-zero", 5*time.Minute)
+		enqueueMessage(ctx, rdb, budgetRequestQueue, msg)
+
+		gomega.Consistently(func() int64 {
+			return getResultCount(ctx, rdb, budgetResultQueue)
+		}, 10*time.Second, 1*time.Second).Should(gomega.Equal(int64(0)))
+
+		// Restore budget
+		setSimKvCache(simAdminURL, 0.0)
+		waitForBudget(promURL, envoyURL, func(b float64) bool { return b > 0.5 })
+
+		gomega.Eventually(func() int64 {
+			return getResultCount(ctx, rdb, budgetResultQueue)
+		}, 60*time.Second, 1*time.Second).Should(gomega.BeNumerically(">=", 1))
+
+		result := popResult(ctx, rdb, budgetResultQueue)
+		gomega.Expect(result).NotTo(gomega.BeNil())
+		gomega.Expect(result.Id).To(gomega.Equal("budget-zero"))
+	})
+
+	ginkgo.It("resumes processing when dispatch budget is restored", func() {
+		setSimKvCache(simAdminURL, 1.0)
+		waitForBudget(promURL, envoyURL, func(b float64) bool { return b <= 0 })
+
+		for i := 1; i <= 3; i++ {
+			msg := makeRequestMessage(fmt.Sprintf("budget-resume-%d", i), 5*time.Minute)
+			enqueueMessage(ctx, rdb, budgetRequestQueue, msg)
+		}
+
+		gomega.Consistently(func() int64 {
+			return getResultCount(ctx, rdb, budgetResultQueue)
+		}, 5*time.Second, 1*time.Second).Should(gomega.Equal(int64(0)))
+
+		setSimKvCache(simAdminURL, 0.0)
+		waitForBudget(promURL, envoyURL, func(b float64) bool { return b > 0.5 })
+
+		gomega.Eventually(func() int64 {
+			return getResultCount(ctx, rdb, budgetResultQueue)
+		}, 60*time.Second, 1*time.Second).Should(gomega.BeNumerically(">=", 3))
+	})
+})
+
 var _ = ginkgo.Describe("Saturation Metric Dispatch Gate Integration", func() {
 	var ctx context.Context
 

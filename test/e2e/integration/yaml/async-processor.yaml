@@ -51,3 +51,58 @@ spec:
             - "--redis.ss.request-path-url=/v1/completions"
             - "--metrics-endpoint-auth=false"
             - "--concurrency=1"
+---
+# Budget gate: D = 1 - (F_SYS + F_EPP + B), querying both saturation and EPP queue depth.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: async-processor-budget
+  namespace: e2e-integration
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: async-processor-budget-auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: async-processor-budget
+    namespace: e2e-integration
+roleRef:
+  kind: ClusterRole
+  name: system:auth-delegator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: async-processor-budget
+  namespace: e2e-integration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: async-processor-budget
+  template:
+    metadata:
+      labels:
+        app: async-processor-budget
+    spec:
+      serviceAccountName: async-processor-budget
+      containers:
+        - name: async-processor
+          image: ${AP_IMAGE}
+          imagePullPolicy: Never
+          args:
+            - "--message-queue-impl=redis-sortedset"
+            - "--prometheus-url=http://prometheus.e2e-integration.svc.cluster.local:9090"
+            - "--redis.ss.gate-type=prometheus-budget"
+            - "--redis.ss.gate-params={\"pool\":\"e2e-pool\",\"max_sys\":\"100\",\"baseline\":\"0.05\"}"
+            - "--redis.ss.igw-base-url=http://envoy.e2e-integration.svc.cluster.local:8081"
+            - "--redis.addr=redis.e2e-integration.svc.cluster.local:6379"
+            - "--redis.ss.poll-interval-ms=500"
+            - "--redis.ss.batch-size=10"
+            - "--redis.ss.request-queue-name=budget-request-sortedset"
+            - "--redis.ss.result-queue-name=budget-result-list"
+            - "--redis.ss.request-path-url=/v1/completions"
+            - "--metrics-endpoint-auth=false"
+            - "--concurrency=1"
