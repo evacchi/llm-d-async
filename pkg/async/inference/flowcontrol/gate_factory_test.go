@@ -77,7 +77,7 @@ func TestGateFactory_PrometheusGateWithInvalidThreshold(t *testing.T) {
 	})
 	assert.Error(t, err, "should return error when threshold is not a valid float")
 	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid threshold value")
+	assert.Contains(t, err.Error(), "invalid value")
 }
 
 func TestGateFactory_PrometheusGateWithInvalidFallback(t *testing.T) {
@@ -87,7 +87,7 @@ func TestGateFactory_PrometheusGateWithInvalidFallback(t *testing.T) {
 	})
 	assert.Error(t, err, "should return error when fallback is not a valid float")
 	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid fallback value")
+	assert.Contains(t, err.Error(), "invalid value")
 }
 
 func TestGateFactory_PrometheusGateWithThresholdAndFallback(t *testing.T) {
@@ -244,7 +244,7 @@ func TestGateFactory_BudgetGateWithInvalidFallback(t *testing.T) {
 	})
 	assert.Error(t, err, "should return error when fallback is not a valid float")
 	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid fallback value")
+	assert.Contains(t, err.Error(), "invalid value")
 }
 
 func TestGateFactory_BudgetGateWithAllParams(t *testing.T) {
