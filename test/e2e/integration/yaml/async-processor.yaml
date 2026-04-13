@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: async-processor-integration
+  namespace: e2e-integration
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: async-processor-integration-auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: async-processor-integration
+    namespace: e2e-integration
+roleRef:
+  kind: ClusterRole
+  name: system:auth-delegator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: async-processor-integration
+  namespace: e2e-integration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: async-processor-integration
+  template:
+    metadata:
+      labels:
+        app: async-processor-integration
+    spec:
+      serviceAccountName: async-processor-integration
+      containers:
+        - name: async-processor
+          image: ${AP_IMAGE}
+          imagePullPolicy: Never
+          args:
+            - "--message-queue-impl=redis-sortedset"
+            - "--prometheus-url=http://prometheus.e2e-integration.svc.cluster.local:9090"
+            - "--redis.ss.gate-type=prometheus-saturation"
+            - "--redis.ss.gate-params={\"query\":\"inference_pool_average_kv_cache_utilization{name=\\\"e2e-pool\\\"}\",\"threshold\":\"0.7\"}"
+            - "--redis.ss.igw-base-url=http://llm-sim.e2e-integration.svc.cluster.local:8000"
+            - "--redis.addr=redis.e2e-integration.svc.cluster.local:6379"
+            - "--redis.ss.poll-interval-ms=500"
+            - "--redis.ss.batch-size=10"
+            - "--redis.ss.request-queue-name=integration-request-sortedset"
+            - "--redis.ss.result-queue-name=integration-result-list"
+            - "--redis.ss.request-path-url=/v1/completions"
+            - "--metrics-endpoint-auth=false"
+            - "--concurrency=1"
