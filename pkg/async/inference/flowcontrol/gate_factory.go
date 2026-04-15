@@ -111,19 +111,6 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (asy
 		}
 		return NewBudgetDispatchGate(source, fallback), nil
 
-	case "prometheus-budget":
-		if f.prometheusURL == "" {
-			return nil, fmt.Errorf("prometheus-budget gate type requires --prometheus-url flag to be set")
-		}
-		source, fallback, err := createBudgetPromQLSource(
-			promapi.Config{Address: f.prometheusURL},
-			params["pool"], params["max_sys"], params["baseline"], params["fallback"], params["query"],
-		)
-		if err != nil {
-			return nil, err
-		}
-		return NewBudgetDispatchGate(source, fallback), nil
-
 	default:
 		// Unknown gate types default to open gate
 		return ConstOpenGate(), nil

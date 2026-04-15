@@ -77,7 +77,7 @@ func TestGateFactory_PrometheusGateWithInvalidThreshold(t *testing.T) {
 	})
 	assert.Error(t, err, "should return error when threshold is not a valid float")
 	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "invalid threshold value")
 }
 
 func TestGateFactory_PrometheusGateWithInvalidFallback(t *testing.T) {
@@ -87,7 +87,7 @@ func TestGateFactory_PrometheusGateWithInvalidFallback(t *testing.T) {
 	})
 	assert.Error(t, err, "should return error when fallback is not a valid float")
 	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "invalid fallback value")
 }
 
 func TestGateFactory_PrometheusGateWithThresholdAndFallback(t *testing.T) {
@@ -196,35 +196,6 @@ func TestGateFactory_BudgetGateWithZeroMaxSys(t *testing.T) {
 	assert.Contains(t, err.Error(), "max_sys must be positive")
 }
 
-func TestGateFactory_BudgetGateWithCustomQuery(t *testing.T) {
-	factory := NewGateFactory("http://localhost:9090")
-	gate, err := factory.CreateGate("prometheus-budget", map[string]string{
-		"query": "custom_combined_saturation_metric",
-	})
-	assert.NoError(t, err)
-	assert.NotNil(t, gate)
-}
-
-func TestGateFactory_BudgetGateWithInvalidMaxSys(t *testing.T) {
-	factory := NewGateFactory("http://localhost:9090")
-	gate, err := factory.CreateGate("prometheus-budget", map[string]string{
-		"max_sys": "not-a-number",
-	})
-	assert.Error(t, err)
-	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid max_sys value")
-}
-
-func TestGateFactory_BudgetGateWithZeroMaxSys(t *testing.T) {
-	factory := NewGateFactory("http://localhost:9090")
-	gate, err := factory.CreateGate("prometheus-budget", map[string]string{
-		"max_sys": "0",
-	})
-	assert.Error(t, err)
-	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "max_sys must be positive")
-}
-
 func TestGateFactory_BudgetGateWithInvalidBaseline(t *testing.T) {
 	factory := NewGateFactory("http://localhost:9090")
 	gate, err := factory.CreateGate("prometheus-budget", map[string]string{
@@ -244,7 +215,7 @@ func TestGateFactory_BudgetGateWithInvalidFallback(t *testing.T) {
 	})
 	assert.Error(t, err, "should return error when fallback is not a valid float")
 	assert.Nil(t, gate)
-	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "invalid fallback value")
 }
 
 func TestGateFactory_BudgetGateWithAllParams(t *testing.T) {

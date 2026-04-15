@@ -29,10 +29,6 @@ import (
 // It constructs a PromQL query for inference_extension_flow_control_pool_saturation
 // filtered by the "pool" param (required).
 func NewSaturationPromQLSourceFromConfig(promConfig promapi.Config, params map[string]string) (*PromQLMetricSource, error) {
-	if query := params["query"]; query != "" {
-		return NewPromQLMetricSource(promConfig, query)
-	}
-
 	inferencePool := params["pool"]
 	if inferencePool == "" {
 		return nil, fmt.Errorf("inference pool name is required for saturation PromQL")
