@@ -152,6 +152,13 @@ test-e2e: ## Run e2e tests against a Kind cluster
 		$(if $(FOCUS),-ginkgo.focus="$(FOCUS)",) \
 		$(if $(SKIP),-ginkgo.skip="$(SKIP)",)
 
+.PHONY: test-e2e-integration
+test-e2e-integration: ## Run e2e integration tests against a Kind cluster
+	@command -v kind >/dev/null 2>&1 || { echo "kind is not installed"; exit 1; }
+	AP_IMAGE=$(E2E_IMG) go test ./test/e2e/integration/ -timeout 30m -v -ginkgo.v \
+		$(if $(FOCUS),-ginkgo.focus="$(FOCUS)",) \
+		$(if $(SKIP),-ginkgo.skip="$(SKIP)",)
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run  --timeout 5m
