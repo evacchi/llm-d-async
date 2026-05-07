@@ -12,7 +12,9 @@ backed by a real vLLM model server and the upstream llm-d stack.
 ```bash
 export LLM_D_REPO=/path/to/llm-d        # local checkout of github.com/llm-d/llm-d
 export ASYNC_REPO=/path/to/llm-d-async   # this repo
-export NAMESPACE=llm-d-async              # choose your namespace
+export NAMESPACE=llm-d-async              # this guide uses a single namespace for
+                                          # simplicity; in production, deploy the
+                                          # async-processor in its own namespace
 export GAIE_VERSION=v1.5.0
 export GATEWAY_API_VERSION=v1.5.1
 export GUIDE_NAME=optimized-baseline
