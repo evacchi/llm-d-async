@@ -6,7 +6,6 @@ ap:
   igwBaseURL: "http://llm-d-inference-gateway-istio:80"
   messageQueueImpl: "redis-sortedset"
   concurrency: 4
-  prometheusURL: "http://llmd-kube-prometheus-stack-prometheus.llm-d-monitoring.svc.cluster.local:9090"
   metrics:
     enabled: true
     port: 9090
@@ -20,6 +19,7 @@ ap:
     pollIntervalMs: 1000
     batchSize: 10
     gateType: "prometheus-budget"
+    prometheusURL: "http://llmd-kube-prometheus-stack-prometheus.llm-d-monitoring.svc.cluster.local:9090"
     gateParams:
       pool: "optimized-baseline"
       max_concurrency: "100"

@@ -5,8 +5,6 @@ ap:
     tag: 0.6.0
   imagePullPolicy: Always
   concurrency: 8
-  prometheusURL: ""
-  prometheusCacheTTL: ""
   metrics:
     enabled: true
     port: 9090
@@ -40,6 +38,8 @@ ap:
     batchSize: 10
     gateType: ""
     gateParams: {}
+    # prometheusURL: ""       # Prometheus server URL for metric-based gates (e.g., http://prometheus:9090)
+    # prometheusCacheTTL: ""  # TTL for cached Prometheus metrics (e.g., 5s, 0s to disable)
   # PodMonitor for model server metrics relabeling.
   # Creates a PodMonitor that scrapes vLLM metrics and relabels
   # the inference_pool pod label into scraped metrics.
