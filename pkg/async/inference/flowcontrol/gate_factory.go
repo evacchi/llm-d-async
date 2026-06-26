@@ -69,7 +69,7 @@ func (f *GateFactory) Close() error {
 	return firstErr
 }
 
-// CreateGate creates a DispatchGate based on the gate type and parameters.
+// CreateGate creates a DispatchGate based on the gate configuration.
 // Supported gate types:
 //   - "constant": Always returns budget 1.0 (fully open)
 //   - "redis": Queries Redis for dispatch budget
@@ -94,29 +94,27 @@ func (f *GateFactory) Close() error {
 //     Params: query (required), fallback (default 0.0)
 //
 // For unsupported or unknown gate types, returns ConstOpenGate as a safe default.
-func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pipeline.Gate, error) {
-	switch gateType {
+func (f *GateFactory) CreateGate(cfg pipeline.GateConfig) (pipeline.Gate, error) {
+	params := cfg.GateParams
+	if params == nil {
+		params = map[string]any{}
+	}
+
+	switch cfg.GateType {
 	case "composite":
-		gatesJSON := params["gates"]
-		if gatesJSON == "" {
-			return nil, fmt.Errorf("composite gate requires 'gates' parameter with JSON array of gate configurations")
+		configs, err := paramGateConfigs(params, "gates")
+		if err != nil {
+			return nil, fmt.Errorf("composite gate: %w", err)
 		}
-
-		type gateConfig struct {
-			GateType   string            `json:"gate_type"`
-			GateParams map[string]string `json:"gate_params"`
-		}
-
-		var configs []gateConfig
-		if err := json.Unmarshal([]byte(gatesJSON), &configs); err != nil {
-			return nil, fmt.Errorf("composite gate failed to parse 'gates' parameter: %w", err)
+		if len(configs) == 0 {
+			return nil, fmt.Errorf("composite gate requires 'gates' parameter with gate configurations")
 		}
 
 		var innerGates []pipeline.Gate
-		for _, cfg := range configs {
-			gate, err := f.CreateGate(cfg.GateType, cfg.GateParams)
+		for _, innerCfg := range configs {
+			gate, err := f.CreateGate(innerCfg)
 			if err != nil {
-				return nil, fmt.Errorf("composite gate failed to create inner gate %q: %w", cfg.GateType, err)
+				return nil, fmt.Errorf("composite gate failed to create inner gate %q: %w", innerCfg.GateType, err)
 			}
 			innerGates = append(innerGates, gate)
 		}
@@ -127,7 +125,7 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 		return ConstOpenGate(), nil
 
 	case "redis":
-		addr := params["address"]
+		addr := paramString(params, "address", "")
 		if addr == "" {
 			return nil, fmt.Errorf("redis gate requires an 'address' in gate_params")
 		}
@@ -136,14 +134,11 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 			client = goredis.NewClient(&goredis.Options{Addr: addr})
 			f.redisClients[addr] = client
 		}
-		budgetKey := params["budget_key"]
-		if budgetKey == "" {
-			budgetKey = "dispatch-gate-budget"
-		}
+		budgetKey := paramString(params, "budget_key", "dispatch-gate-budget")
 		return redisgate.NewRedisDispatchGate(client, budgetKey), nil
 
 	case "redis-quota":
-		addr := params["address"]
+		addr := paramString(params, "address", "")
 		if addr == "" {
 			return nil, fmt.Errorf("redis-quota gate requires an 'address' in gate_params")
 		}
@@ -153,37 +148,26 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 			f.redisClients[addr] = client
 		}
 
-		attr := params["attribute"]
-		if attr == "" {
-			attr = "userid"
-		}
+		attr := paramString(params, "attribute", "userid")
+		mode := redisgate.QuotaMode(paramString(params, "mode", string(redisgate.QuotaModeRateLimit)))
 
-		mode := redisgate.QuotaMode(params["mode"])
-		if mode == "" {
-			mode = redisgate.QuotaModeRateLimit
-		}
-
-		limit, err := strconv.Atoi(params["limit"])
+		limit, err := paramInt(params, "limit", 0)
 		if err != nil {
-			return nil, fmt.Errorf("redis-quota gate requires a valid 'limit': %w", err)
+			return nil, fmt.Errorf("redis-quota gate: %w", err)
+		}
+		if limit == 0 {
+			return nil, fmt.Errorf("redis-quota gate requires a valid 'limit'")
 		}
 
-		windowStr := params["window"]
-		if windowStr == "" {
-			windowStr = "1m"
-		}
-		window, err := time.ParseDuration(windowStr)
+		window, err := paramDuration(params, "window", 1*time.Minute)
 		if err != nil {
-			return nil, fmt.Errorf("redis-quota gate requires a valid 'window' duration: %w", err)
+			return nil, fmt.Errorf("redis-quota gate: %w", err)
 		}
 
-		prefix := params["prefix"]
-		if prefix == "" {
-			prefix = "quota:"
-		}
+		prefix := paramString(params, "prefix", "quota:")
 
 		gate := redisgate.NewRedisQuotaGate(client, attr, mode, limit, window, prefix)
-		gatingMode := redisgate.GatingMode(params["gating_mode"])
+		gatingMode := redisgate.GatingMode(paramString(params, "gating_mode", ""))
 		if gatingMode != "" {
 			gate.WithGatingMode(gatingMode)
 		}
@@ -195,11 +179,11 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 			return nil, fmt.Errorf("prometheus-saturation gate type requires --prometheus-url flag to be set")
 		}
 
-		threshold, err := parseFloat("threshold", params["threshold"], 0.8)
+		threshold, err := paramFloat(params, "threshold", 0.8)
 		if err != nil {
 			return nil, err
 		}
-		fallback, err := parseFloat("fallback", params["fallback"], 0.0)
+		fallback, err := paramFloat(params, "fallback", 0.0)
 		if err != nil {
 			return nil, err
 		}
@@ -220,31 +204,31 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 			return nil, fmt.Errorf("prometheus-budget gate type requires --prometheus-url flag to be set")
 		}
 
-		pool := params["pool"]
+		pool := paramString(params, "pool", "")
 		if pool == "" {
 			return nil, fmt.Errorf("inference pool name is required for prometheus-budget gate")
 		}
-		maxConcurrency, err := parseFloat("max_concurrency", params["max_concurrency"], 100.0)
+		maxConcurrency, err := paramFloat(params, "max_concurrency", 100.0)
 		if err != nil {
 			return nil, err
 		}
 		if maxConcurrency <= 0 {
 			return nil, fmt.Errorf("max_concurrency must be positive, got %g", maxConcurrency)
 		}
-		baseline, err := parseFloat("baseline", params["baseline"], 0.05)
+		baseline, err := paramFloat(params, "baseline", 0.05)
 		if err != nil {
 			return nil, err
 		}
 		if baseline < 0 || baseline >= 1 {
 			return nil, fmt.Errorf("baseline must be in [0, 1), got %g", baseline)
 		}
-		fallback, err := parseFloat("fallback", params["fallback"], 0.0)
+		fallback, err := paramFloat(params, "fallback", 0.0)
 		if err != nil {
 			return nil, err
 		}
 
 		promConfig := promapi.Config{Address: f.prometheusURL}
-		namespace := params["namespace"]
+		namespace := paramString(params, "namespace", "")
 
 		primary, err := NewFlowControlQueueSizePromQL(promConfig, pool, maxConcurrency, namespace)
 		if err != nil {
@@ -266,12 +250,12 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 			return nil, fmt.Errorf("prometheus-query gate type requires --prometheus-url flag to be set")
 		}
 
-		query := params["query"]
+		query := paramString(params, "query", "")
 		if query == "" {
 			return nil, fmt.Errorf("prometheus-query gate requires a 'query' parameter with a PromQL expression")
 		}
 
-		fallback, err := parseFloat("fallback", params["fallback"], 0.0)
+		fallback, err := paramFloat(params, "fallback", 0.0)
 		if err != nil {
 			return nil, err
 		}
@@ -284,64 +268,56 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 		return NewMetricDispatchGate(cachedSource(source, f.cacheTTL), 0.0, fallback), nil
 
 	case "endpoint-scrape":
-		url := params["url"]
+		url := paramString(params, "url", "")
 		if url == "" {
 			return nil, fmt.Errorf("endpoint-scrape gate requires a 'url' parameter")
 		}
-		metric := params["metric"]
+		metric := paramString(params, "metric", "")
 		if metric == "" {
 			return nil, fmt.Errorf("endpoint-scrape gate requires a 'metric' parameter")
 		}
 
-		var labels map[string]string
-		if labelsJSON := params["labels"]; labelsJSON != "" {
-			if err := json.Unmarshal([]byte(labelsJSON), &labels); err != nil {
-				return nil, fmt.Errorf("endpoint-scrape gate failed to parse 'labels': %w", err)
-			}
+		labels, err := paramStringMap(params, "labels")
+		if err != nil {
+			return nil, fmt.Errorf("endpoint-scrape gate failed to parse 'labels': %w", err)
 		}
 
-		maxCountPerPod, err := parseFloat("max_count_per_pod", params["max_count_per_pod"], 0)
+		maxCountPerPod, err := paramFloat(params, "max_count_per_pod", 0)
 		if err != nil {
 			return nil, err
 		}
-		baseline, err := parseFloat("baseline", params["baseline"], 0.0)
+		baseline, err := paramFloat(params, "baseline", 0.0)
 		if err != nil {
 			return nil, err
 		}
-		fallback, err := parseFloat("fallback", params["fallback"], 0.0)
+		fallback, err := paramFloat(params, "fallback", 0.0)
 		if err != nil {
 			return nil, err
 		}
 
-		var podsLabels map[string]string
-		if podsLabelsJSON := params["pods_labels"]; podsLabelsJSON != "" {
-			if err := json.Unmarshal([]byte(podsLabelsJSON), &podsLabels); err != nil {
-				return nil, fmt.Errorf("endpoint-scrape gate failed to parse 'pods_labels': %w", err)
-			}
+		podsLabels, err := paramStringMap(params, "pods_labels")
+		if err != nil {
+			return nil, fmt.Errorf("endpoint-scrape gate failed to parse 'pods_labels': %w", err)
 		}
 
-		cfg := ScrapeConfig{
+		scrpCfg := ScrapeConfig{
 			URL:            url,
 			MetricName:     metric,
 			Labels:         labels,
 			MaxCountPerPod: maxCountPerPod,
-			PodsURL:        params["pods_url"],
-			PodsMetric:     params["pods_metric"],
+			PodsURL:        paramString(params, "pods_url", ""),
+			PodsMetric:     paramString(params, "pods_metric", ""),
 			PodsLabels:     podsLabels,
 		}
 
-		var ms MetricSource = NewScrapeMetricSource(cfg)
+		var ms MetricSource = NewScrapeMetricSource(scrpCfg)
 		ms = cachedSource(ms, f.cacheTTL)
 		return NewMetricDispatchGate(ms, baseline, fallback), nil
 
 	case "local-max-concurrency":
-		limitStr := params["limit"]
-		if limitStr == "" {
-			return nil, fmt.Errorf("local-max-concurrency gate requires a 'limit' parameter")
-		}
-		limit, err := strconv.Atoi(limitStr)
+		limit, err := paramInt(params, "limit", 0)
 		if err != nil {
-			return nil, fmt.Errorf("local-max-concurrency gate requires a valid integer 'limit': %w", err)
+			return nil, fmt.Errorf("local-max-concurrency gate: %w", err)
 		}
 		if limit <= 0 {
 			return nil, fmt.Errorf("local-max-concurrency limit must be greater than 0, got %d", limit)
@@ -349,20 +325,142 @@ func (f *GateFactory) CreateGate(gateType string, params map[string]string) (pip
 		return NewLocalConcurrencyGate(limit), nil
 
 	default:
-		// Unknown gate types default to open gate
 		return ConstOpenGate(), nil
 	}
 }
 
-func parseFloat(name, str string, defaultValue float64) (float64, error) {
-	if str == "" {
-		return defaultValue, nil
+func paramString(params map[string]any, key, defaultVal string) string {
+	v, ok := params[key]
+	if !ok || v == nil {
+		return defaultVal
 	}
-	v, err := strconv.ParseFloat(str, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid %s value '%s': %w", name, str, err)
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(val)
+	default:
+		return defaultVal
 	}
-	return v, nil
+}
+
+func paramFloat(params map[string]any, key string, defaultVal float64) (float64, error) {
+	v, ok := params[key]
+	if !ok || v == nil {
+		return defaultVal, nil
+	}
+	switch val := v.(type) {
+	case float64:
+		return val, nil
+	case string:
+		if val == "" {
+			return defaultVal, nil
+		}
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s value '%s': %w", key, val, err)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("invalid %s value: unsupported type %T", key, v)
+	}
+}
+
+func paramInt(params map[string]any, key string, defaultVal int) (int, error) {
+	v, ok := params[key]
+	if !ok || v == nil {
+		return defaultVal, nil
+	}
+	switch val := v.(type) {
+	case float64:
+		return int(val), nil
+	case string:
+		if val == "" {
+			return defaultVal, nil
+		}
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s value '%s': %w", key, val, err)
+		}
+		return i, nil
+	default:
+		return 0, fmt.Errorf("invalid %s value: unsupported type %T", key, v)
+	}
+}
+
+func paramDuration(params map[string]any, key string, defaultVal time.Duration) (time.Duration, error) {
+	v, ok := params[key]
+	if !ok || v == nil {
+		return defaultVal, nil
+	}
+	switch val := v.(type) {
+	case string:
+		if val == "" {
+			return defaultVal, nil
+		}
+		return time.ParseDuration(val)
+	case float64:
+		return time.Duration(val * float64(time.Second)), nil
+	default:
+		return 0, fmt.Errorf("invalid %s value: unsupported type %T", key, v)
+	}
+}
+
+// paramStringMap extracts a map[string]string from params. The value can be
+// a JSON string, a map[string]any (from properly typed JSON), or absent.
+func paramStringMap(params map[string]any, key string) (map[string]string, error) {
+	v, ok := params[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	switch val := v.(type) {
+	case string:
+		if val == "" {
+			return nil, nil
+		}
+		var m map[string]string
+		if err := json.Unmarshal([]byte(val), &m); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case map[string]any:
+		m := make(map[string]string, len(val))
+		for k, v := range val {
+			m[k] = fmt.Sprintf("%v", v)
+		}
+		return m, nil
+	default:
+		return nil, fmt.Errorf("unsupported type %T for %s", v, key)
+	}
+}
+
+// paramGateConfigs extracts a []pipeline.GateConfig from params. The value can be
+// a JSON string (legacy format), a []any (from properly typed JSON), or absent.
+func paramGateConfigs(params map[string]any, key string) ([]pipeline.GateConfig, error) {
+	v, ok := params[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	// In all cases, marshal back to JSON and unmarshal into the typed struct.
+	// This handles both []any (from inline JSON objects) and string (legacy).
+	var raw []byte
+	switch val := v.(type) {
+	case string:
+		raw = []byte(val)
+	default:
+		var err error
+		raw, err = json.Marshal(val)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal %s: %w", key, err)
+		}
+	}
+	var configs []pipeline.GateConfig
+	if err := json.Unmarshal(raw, &configs); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", key, err)
+	}
+	return configs, nil
 }
 
 func cachedSource(s MetricSource, ttl time.Duration) MetricSource {

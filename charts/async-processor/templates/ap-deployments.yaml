@@ -23,69 +23,8 @@ spec:
       - command:
         - /async-processor
         args:
-          {{- if .Values.ap.redis.enabled }}
-          {{- if eq (.Values.ap.messageQueueImpl | default "redis-pubsub") "redis-sortedset" }}
-          - --message-queue-impl=redis-sortedset
-          {{- if and .Values.ap.redis.queuesConfig .Values.ap.redis.gateType }}
-          {{- fail "Cannot set both queuesConfig and gateType. Use queuesConfig with per-queue gate_type instead." }}
-          {{- end }}
-          {{- if .Values.ap.redis.queuesConfig }}
-          - --redis.ss.queues-config
-          - {{ .Values.ap.redis.queuesConfig | toJson | quote }}
-          {{- else }}
-          - --redis.ss.igw-base-url={{ .Values.ap.igwBaseURL }}
-          - --redis.ss.request-path-url
-          - "{{ .Values.ap.redis.requestPathURL }}"
-          - --redis.ss.request-queue-name
-          - "{{ .Values.ap.redis.requestQueueName | default "request-sortedset" }}"
-          {{- if .Values.ap.redis.gateType }}
-          - --redis.ss.gate-type={{ .Values.ap.redis.gateType }}
-          - --redis.ss.gate-params={{ include "async-processor.gateParamsJson" . }}
-          {{- end }}
-          {{- end }}
-          - --redis.ss.result-queue-name
-          - "{{ .Values.ap.redis.resultQueueName | default "result-list" }}"
-          - --redis.ss.poll-interval-ms
-          - "{{ .Values.ap.redis.pollIntervalMs | default 1000 }}"
-          - --redis.ss.batch-size
-          - "{{ .Values.ap.redis.batchSize | default 10 }}"
-          {{- else }}
-          - --message-queue-impl=redis-pubsub
-          {{- if .Values.ap.redis.queuesConfig }}
-          - --redis.queues-config
-          - {{ .Values.ap.redis.queuesConfig | toJson | quote }}
-          {{- else }}
-          - --redis.igw-base-url={{ .Values.ap.igwBaseURL }}
-          - --redis.request-path-url
-          - "{{ .Values.ap.redis.requestPathURL }}"
-          {{- end }}
-          {{- end }}
-          {{- else if .Values.ap.gcpPubSub.enabled }}
-          {{- /* Honor an explicit gcp-pubsub* messageQueueImpl; otherwise auto-select
-                 gcp-pubsub-gated when any topic declares a gate_type (per-topic gates
-                 only take effect in gated mode). */}}
-          {{- $mqImpl := "gcp-pubsub" }}
-          {{- if and .Values.ap.messageQueueImpl (hasPrefix "gcp-pubsub" .Values.ap.messageQueueImpl) }}
-          {{- $mqImpl = .Values.ap.messageQueueImpl }}
-          {{- else }}
-          {{- range .Values.ap.gcpPubSub.topicsConfig }}
-          {{- if .gate_type }}{{- $mqImpl = "gcp-pubsub-gated" }}{{- end }}
-          {{- end }}
-          {{- end }}
-          - --message-queue-impl={{ $mqImpl }}
-          {{- if .Values.ap.gcpPubSub.projectId }}
-          - --pubsub.project-id={{ .Values.ap.gcpPubSub.projectId }}
-          {{- end }}
-          - --pubsub.result-topic-id={{ .Values.ap.gcpPubSub.resultTopicId }}
-          {{- if .Values.ap.gcpPubSub.topicsConfig }}
-          - --pubsub.topics-config-file=/etc/async-processor/config/pubsub-topics.json
-          {{- else }}
-          - --pubsub.igw-base-url={{ .Values.ap.igwBaseURL }}
-          - --pubsub.request-subscriber-id={{ .Values.ap.gcpPubSub.requestSubscriberId }}
-          - --pubsub.request-path-url
-          - "{{ .Values.ap.gcpPubSub.requestPathURL }}"
-          {{- end }}
-          {{- end }}
+          - --transport={{ .Values.ap.transport }}
+          - --transport-config-file=/etc/async-processor/config/transport.json
           {{- if .Values.ap.prometheusURL }}
           - --prometheus-url={{ .Values.ap.prometheusURL }}
           {{- end }}
@@ -103,9 +42,6 @@ spec:
           - --health-port={{ .Values.ap.health.port | default 8081 }}
           - --metrics-endpoint-auth={{ .Values.ap.metrics.secure }}
           - --metrics-port={{ .Values.ap.metrics.port | default 9090 }}
-          {{- if and .Values.ap.otel.redisTracing .Values.ap.otel.endpoint }}
-          - --redis-tracing=true
-          {{- end }}
           {{- if .Values.ap.tls.insecureSkipVerify }}
           - --tls-insecure-skip-verify=true
           {{- end }}
@@ -190,9 +126,9 @@ spec:
         resources:
           {{- toYaml . | nindent 12 }}
         {{- end }}
-        {{- if or .Values.ap.workerPools .Values.ap.gcpPubSub.topicsConfig .Values.ap.transformConfig .Values.ap.tls.secretName }}
+        {{- if or .Values.ap.transportConfig .Values.ap.workerPools .Values.ap.transformConfig .Values.ap.tls.secretName }}
         volumeMounts:
-          {{- if or .Values.ap.workerPools .Values.ap.gcpPubSub.topicsConfig .Values.ap.transformConfig }}
+          {{- if or .Values.ap.transportConfig .Values.ap.workerPools .Values.ap.transformConfig }}
           - name: ap-config
             mountPath: /etc/async-processor/config
             readOnly: true
@@ -205,9 +141,9 @@ spec:
         {{- end }}
       serviceAccountName: {{ include "async-processor.fullname" . }}
       terminationGracePeriodSeconds: 130
-      {{- if or .Values.ap.workerPools .Values.ap.gcpPubSub.topicsConfig .Values.ap.transformConfig .Values.ap.tls.secretName }}
+      {{- if or .Values.ap.transportConfig .Values.ap.workerPools .Values.ap.transformConfig .Values.ap.tls.secretName }}
       volumes:
-        {{- if or .Values.ap.workerPools .Values.ap.gcpPubSub.topicsConfig .Values.ap.transformConfig }}
+        {{- if or .Values.ap.transportConfig .Values.ap.workerPools .Values.ap.transformConfig }}
         - name: ap-config
           configMap:
             name: {{ include "async-processor.fullname" . }}-config

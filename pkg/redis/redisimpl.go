@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -149,101 +148,46 @@ type RedisMQFlow struct {
 	enableTracing   bool
 }
 
-// RedisOption is a functional option for configuring RedisMQFlow.
-type RedisOption func(*RedisMQFlow)
-
-// WithRedisTracing enables per-command Redis tracing spans via redisotel.
-func WithRedisTracing(enable bool) RedisOption {
-	return func(r *RedisMQFlow) {
-		r.enableTracing = enable
-	}
-}
-
-// WithWorkerPools sets the pool configurations to resolve named pools.
-func WithWorkerPools(workerPools []pipeline.WorkerPoolConfig) RedisOption {
-	return func(r *RedisMQFlow) {
-		r.workerPools = workerPools
-	}
-}
-
-func NewRedisMQFlow(flowOpts PubSubFlowOptions, connOpts ConnectionOptions, fns ...RedisOption) (*RedisMQFlow, error) {
-	redisOpts, err := ParseRedisOptions(connOpts.URL)
+func NewRedisMQFlow(cfg PubSubConfig, workerPools []pipeline.WorkerPoolConfig) (*RedisMQFlow, error) {
+	redisOpts, err := ParseRedisOptions(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Redis connection config: %w", err)
 	}
 	rdb := redis.NewClient(redisOpts)
-	var configs []QueueConfig
-	if flowOpts.QueuesConfig != "" {
-		if err := json.Unmarshal([]byte(flowOpts.QueuesConfig), &configs); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal inline queues config: %w", err)
-		}
-	} else if flowOpts.QueuesConfigFile != "" {
-		data, err := os.ReadFile(flowOpts.QueuesConfigFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read queues config file: %w", err)
-		}
-		if err := json.Unmarshal(data, &configs); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal queues config: %w", err)
-		}
-	} else {
-		configs = []QueueConfig{{
-			QueueName:          flowOpts.RequestQueueName,
-			WorkerPoolID:       "default",
-			InferenceObjective: flowOpts.InferenceObjective,
-			IGWBaseURL:         flowOpts.IGWBaseURL,
-			RequestPathURL:     flowOpts.RequestPathURL,
-		}}
-	}
 
 	flow := &RedisMQFlow{
 		rdb:             rdb,
 		retryChannel:    make(chan pipeline.RetryMessage),
 		resultChannel:   make(chan api.ResultMessage, resultChannelBuffer),
-		retryQueueName:  flowOpts.RetryQueueName,
-		resultQueueName: flowOpts.ResultQueueName,
-	}
-
-	for _, fn := range fns {
-		fn(flow)
+		retryQueueName:  cfg.RetryQueueName,
+		resultQueueName: cfg.ResultQueueName,
+		workerPools:     workerPools,
+		enableTracing:   cfg.EnableTracing,
 	}
 
 	var channels []RequestChannelData
 
-	for _, cfg := range configs {
+	for _, qcfg := range cfg.Queues {
 		ch := make(chan *api.InternalRequest)
-
-		workerPoolID := cfg.WorkerPoolID
-		if workerPoolID == "" {
-			workerPoolID = "default"
-		}
 
 		found := false
 		for _, pool := range flow.workerPools {
-			if pool.ID == workerPoolID {
+			if pool.ID == qcfg.WorkerPoolID {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("worker pool %q specified in queue config not found in pool configuration", workerPoolID)
-		}
-
-		if cfg.IGWBaseURL == "" {
-			return nil, fmt.Errorf("queue config for queue %q: igw_base_url must be specified", cfg.QueueName)
-		}
-
-		reqPath := cfg.RequestPathURL
-		if reqPath == "" {
-			reqPath = "/v1/completions"
+			return nil, fmt.Errorf("worker pool %q specified in queue config not found in pool configuration", qcfg.WorkerPoolID)
 		}
 
 		channels = append(channels, RequestChannelData{pipeline.RequestChannel{
 			Channel:            ch,
-			InferenceObjective: cfg.InferenceObjective,
-			RequestPathURL:     reqPath,
-			IGWBaseURL:         cfg.IGWBaseURL,
-			WorkerPoolID:       workerPoolID,
-		}, cfg.QueueName})
+			InferenceObjective: qcfg.InferenceObjective,
+			RequestPathURL:     qcfg.RequestPathURL,
+			IGWBaseURL:         qcfg.IGWBaseURL,
+			WorkerPoolID:       qcfg.WorkerPoolID,
+		}, qcfg.QueueName})
 	}
 	if flow.enableTracing {
 		if err := redisotel.InstrumentTracing(rdb); err != nil {

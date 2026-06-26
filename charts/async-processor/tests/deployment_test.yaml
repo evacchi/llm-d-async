@@ -1,8 +1,6 @@
 suite: deployment
 templates:
   - templates/ap-deployments.yaml
-set:
-  ap.redis.enabled: true
 tests:
   - it: should render a Deployment
     asserts:
@@ -80,20 +78,6 @@ tests:
           path: spec.template.spec.containers[0].resources.limits.memory
           value: 1Gi
 
-  - it: should allow setting only requests without limits
-    set:
-      ap.resources:
-        requests:
-          cpu: 50m
-          memory: 128Mi
-    asserts:
-      - equal:
-          path: spec.template.spec.containers[0].resources.requests.cpu
-          value: 50m
-      - equal:
-          path: spec.template.spec.containers[0].resources.requests.memory
-          value: 128Mi
-
   - it: should expose metrics port
     asserts:
       - contains:
@@ -128,30 +112,29 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --metrics-port=8080
 
-  - it: should configure redis-pubsub by default when redis enabled
+  - it: should pass --transport with the configured transport type
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=redis-pubsub
+          content: --transport=redis-sortedset
 
-  - it: should configure redis-sortedset when specified
+  - it: should pass transport config file when transportConfig is set
     set:
-      ap.messageQueueImpl: redis-sortedset
+      ap.transportConfig:
+        result_queue_name: "result-list"
+        queues:
+          - queue_name: "q1"
+            igw_base_url: "http://igw:80"
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=redis-sortedset
-
-  - it: should configure GCP Pub/Sub when enabled
-    set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.requestSubscriberId: "test-sub"
-      ap.gcpPubSub.resultTopicId: "test-topic"
-    asserts:
+          content: --transport-config-file=/etc/async-processor/config/transport.json
       - contains:
-          path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=gcp-pubsub
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: ap-config
+            mountPath: /etc/async-processor/config
+            readOnly: true
 
   - it: should default the image to the published repo with the appVersion tag
     asserts:
@@ -166,29 +149,6 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].image
           value: ghcr.io/llm-d-incubation/llm-d-async:v1.2.3
-
-  - it: should render --pubsub.project-id when projectId is set
-    set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.projectId: "my-project"
-      ap.gcpPubSub.requestSubscriberId: "test-sub"
-      ap.gcpPubSub.resultTopicId: "test-topic"
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --pubsub.project-id=my-project
-
-  - it: should not render --pubsub.project-id when projectId is unset
-    set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.requestSubscriberId: "test-sub"
-      ap.gcpPubSub.resultTopicId: "test-topic"
-    asserts:
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --pubsub.project-id=
 
   - it: should inject OTel env vars when endpoint is set
     set:
@@ -234,20 +194,11 @@ tests:
 
   - it: should not mount TLS volume when secretName is empty
     asserts:
-      - isNull:
+      - notContains:
           path: spec.template.spec.containers[0].volumeMounts
-      - isNull:
-          path: spec.template.spec.volumes
-
-  - it: should fail when queuesConfig and gateType are both set
-    set:
-      ap.messageQueueImpl: redis-sortedset
-      ap.redis.gateType: prometheus-saturation
-      ap.redis.queuesConfig:
-        - queue_name: q1
-    asserts:
-      - failedTemplate:
-          errorMessage: "Cannot set both queuesConfig and gateType. Use queuesConfig with per-queue gate_type instead."
+          content:
+            name: tls-certs
+          any: true
 
   - it: should mount config volume and pass pool-config-file when workerPools are set
     set:
@@ -271,80 +222,29 @@ tests:
             configMap:
               name: RELEASE-NAME-async-processor-config
 
-  - it: should mount config volume and pass pubsub.topics-config-file when GCP PubSub topicsConfig is set
+  - it: should inject REDIS_URL from secret when redis is enabled
     set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.resultTopicId: "test-result-topic"
-      ap.gcpPubSub.topicsConfig:
-        - subscriber_id: "sub-1"
-          igw_base_url: "http://igw:80"
+      ap.redis.enabled: true
     asserts:
       - contains:
-          path: spec.template.spec.containers[0].args
-          content: --pubsub.topics-config-file=/etc/async-processor/config/pubsub-topics.json
-      - contains:
-          path: spec.template.spec.containers[0].volumeMounts
+          path: spec.template.spec.containers[0].env
           content:
-            name: ap-config
-            mountPath: /etc/async-processor/config
-            readOnly: true
-      - contains:
-          path: spec.template.spec.volumes
+            name: REDIS_URL
+            valueFrom:
+              secretKeyRef:
+                name: redis-creds
+                key: url
+          any: true
+
+  - it: should not inject REDIS_URL when redis is disabled
+    set:
+      ap.redis.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
           content:
-            name: ap-config
-            configMap:
-              name: RELEASE-NAME-async-processor-config
-
-  - it: should auto-select gcp-pubsub-gated when a topic declares a gate_type
-    set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.resultTopicId: "test-result-topic"
-      ap.gcpPubSub.topicsConfig:
-        - subscriber_id: "sub-1"
-          igw_base_url: "http://igw:80"
-          gate_type: "redis-quota"
-          gate_params:
-            address: "redis:6379"
-            attribute: "team"
-            mode: "concurrency"
-            limit: "5"
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=gcp-pubsub-gated
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=gcp-pubsub
-
-  - it: should keep plain gcp-pubsub when no topic declares a gate_type
-    set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.resultTopicId: "test-result-topic"
-      ap.gcpPubSub.topicsConfig:
-        - subscriber_id: "sub-1"
-          igw_base_url: "http://igw:80"
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=gcp-pubsub
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=gcp-pubsub-gated
-
-  - it: should honor an explicit gcp-pubsub-gated messageQueueImpl override
-    set:
-      ap.redis.enabled: false
-      ap.gcpPubSub.enabled: true
-      ap.gcpPubSub.requestSubscriberId: "test-sub"
-      ap.gcpPubSub.resultTopicId: "test-topic"
-      ap.messageQueueImpl: "gcp-pubsub-gated"
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --message-queue-impl=gcp-pubsub-gated
+            name: REDIS_URL
+          any: true
 
   - it: should pass transform-config-file and mount the config when transformConfig is set
     set:

@@ -1,104 +1,148 @@
 package redis
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
-
-	"github.com/spf13/pflag"
 )
 
-// ConnectionOptions holds the Redis connection configuration.
-type ConnectionOptions struct {
-	URL string
+// PubSubConfig is the transport config for the Redis pub/sub flow.
+// It is parsed from JSON provided via --transport-config or --transport-config-file.
+type PubSubConfig struct {
+	URL             string        `json:"url,omitempty"`
+	RetryQueueName  string        `json:"retry_queue_name,omitempty"`
+	ResultQueueName string        `json:"result_queue_name,omitempty"`
+	EnableTracing   bool          `json:"enable_tracing,omitempty"`
+	Queues          []QueueConfig `json:"queues"`
 }
 
-func NewConnectionOptions() *ConnectionOptions {
-	return &ConnectionOptions{
-		URL: os.Getenv("REDIS_URL"),
+// LoadPubSubConfig parses, applies env overrides/defaults, and validates a PubSubConfig.
+func LoadPubSubConfig(data []byte) (*PubSubConfig, error) {
+	var cfg PubSubConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse redis-pubsub transport config: %w", err)
+	}
+	cfg.ApplyEnvOverrides()
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid redis-pubsub transport config: %w", err)
+	}
+	return &cfg, nil
+}
+
+func (c *PubSubConfig) ApplyEnvOverrides() {
+	if envURL := os.Getenv("REDIS_URL"); envURL != "" {
+		c.URL = envURL
 	}
 }
 
-func (o *ConnectionOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.URL, "redis.url", o.URL, "Redis URL (e.g. redis://user:pass@host:port/db or rediss://... for TLS)")
-}
-
-// PubSubFlowOptions holds CLI flags for the Redis pub/sub flow.
-type PubSubFlowOptions struct {
-	IGWBaseURL         string
-	RequestPathURL     string
-	InferenceObjective string
-	RequestQueueName   string
-	RetryQueueName     string
-	ResultQueueName    string
-	QueuesConfig       string
-	QueuesConfigFile   string
-}
-
-func NewPubSubFlowOptions() *PubSubFlowOptions {
-	return &PubSubFlowOptions{
-		RequestPathURL:   "/v1/completions",
-		RequestQueueName: "request-queue",
-		RetryQueueName:   "retry-sortedset",
-		ResultQueueName:  "result-queue",
+func (c *PubSubConfig) ApplyDefaults() {
+	if c.RetryQueueName == "" {
+		c.RetryQueueName = "retry-sortedset"
+	}
+	if c.ResultQueueName == "" {
+		c.ResultQueueName = "result-queue"
+	}
+	for i := range c.Queues {
+		if c.Queues[i].RequestPathURL == "" {
+			c.Queues[i].RequestPathURL = "/v1/completions"
+		}
+		if c.Queues[i].WorkerPoolID == "" {
+			c.Queues[i].WorkerPoolID = "default"
+		}
 	}
 }
 
-func (o *PubSubFlowOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.IGWBaseURL, "redis.igw-base-url", o.IGWBaseURL, "Base URL for IGW. Mutually exclusive with redis.queues-config-file flag.")
-	fs.StringVar(&o.RequestPathURL, "redis.request-path-url", o.RequestPathURL, "request path url. Mutually exclusive with redis.queues-config-file flag.")
-	fs.StringVar(&o.InferenceObjective, "redis.inference-objective", o.InferenceObjective, "inference objective to use in requests. Mutually exclusive with redis.queues-config-file flag.")
-	fs.StringVar(&o.RequestQueueName, "redis.request-queue-name", o.RequestQueueName, "name of the Redis channel for request messages. Mutually exclusive with redis.queues-config-file flag.")
-	fs.StringVar(&o.RetryQueueName, "redis.retry-queue-name", o.RetryQueueName, "name of the Redis sorted set for retry messages")
-	fs.StringVar(&o.ResultQueueName, "redis.result-queue-name", o.ResultQueueName, "name of the Redis channel for result messages")
-	fs.StringVar(&o.QueuesConfig, "redis.queues-config", o.QueuesConfig, "Inline JSON queues configuration. Takes precedence over redis.queues-config-file and single-queue flags.")
-	fs.StringVar(&o.QueuesConfigFile, "redis.queues-config-file", o.QueuesConfigFile, "Queues Configuration file. Mutually exclusive with redis.igw-base-url, redis.request-queue-name, redis.request-path-url and redis.inference-objective flags. See documentation about syntax")
+func (c *PubSubConfig) Validate() error {
+	if len(c.Queues) == 0 {
+		return fmt.Errorf("at least one queue must be configured")
+	}
+	for _, q := range c.Queues {
+		if q.QueueName == "" {
+			return fmt.Errorf("queue_name is required for each queue")
+		}
+		if q.IGWBaseURL == "" {
+			return fmt.Errorf("queue %q: igw_base_url must be specified", q.QueueName)
+		}
+	}
+	return nil
 }
 
-// HasQueueConfig reports whether any multi-queue configuration is set.
-func (o *PubSubFlowOptions) HasQueueConfig() bool {
-	return o.QueuesConfig != "" || o.QueuesConfigFile != ""
+// SortedSetConfig is the transport config for the Redis sorted-set flow.
+// It is parsed from JSON provided via --transport-config or --transport-config-file.
+type SortedSetConfig struct {
+	URL             string                 `json:"url,omitempty"`
+	ResultQueueName string                 `json:"result_queue_name,omitempty"`
+	PollIntervalMs  int                    `json:"poll_interval_ms,omitempty"`
+	BatchSize       int                    `json:"batch_size,omitempty"`
+	EnableTracing   bool                   `json:"enable_tracing,omitempty"`
+	Queues          []SortedSetQueueConfig `json:"queues"`
 }
 
-// SortedSetFlowOptions holds CLI flags for the Redis sorted-set flow.
-type SortedSetFlowOptions struct {
-	IGWBaseURL         string
-	RequestPathURL     string
-	InferenceObjective string
-	RequestQueueName   string
-	ResultQueueName    string
-	QueuesConfig       string
-	QueuesConfigFile   string
-	PollIntervalMs     int
-	BatchSize          int
-	GateType           string
-	GateParamsJSON     string
+// LoadSortedSetConfig parses, applies env overrides/defaults, and validates a SortedSetConfig.
+func LoadSortedSetConfig(data []byte) (*SortedSetConfig, error) {
+	var cfg SortedSetConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse redis-sortedset transport config: %w", err)
+	}
+	cfg.ApplyEnvOverrides()
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid redis-sortedset transport config: %w", err)
+	}
+	return &cfg, nil
 }
 
-func NewSortedSetFlowOptions() *SortedSetFlowOptions {
-	return &SortedSetFlowOptions{
-		RequestPathURL:   "/v1/completions",
-		RequestQueueName: "request-sortedset",
-		ResultQueueName:  "result-list",
-		PollIntervalMs:   1000,
-		BatchSize:        10,
-		GateParamsJSON:   "{}",
+func (c *SortedSetConfig) ApplyEnvOverrides() {
+	if envURL := os.Getenv("REDIS_URL"); envURL != "" {
+		c.URL = envURL
 	}
 }
 
-func (o *SortedSetFlowOptions) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.IGWBaseURL, "redis.ss.igw-base-url", o.IGWBaseURL, "IGW base URL")
-	fs.StringVar(&o.RequestPathURL, "redis.ss.request-path-url", o.RequestPathURL, "Request path URL")
-	fs.StringVar(&o.InferenceObjective, "redis.ss.inference-objective", o.InferenceObjective, "Inference objective header")
-	fs.StringVar(&o.RequestQueueName, "redis.ss.request-queue-name", o.RequestQueueName, "Request sorted set name")
-	fs.StringVar(&o.ResultQueueName, "redis.ss.result-queue-name", o.ResultQueueName, "Result list name")
-	fs.StringVar(&o.QueuesConfig, "redis.ss.queues-config", o.QueuesConfig, "Inline JSON queues configuration")
-	fs.StringVar(&o.QueuesConfigFile, "redis.ss.queues-config-file", o.QueuesConfigFile, "Multiple queues config file")
-	fs.IntVar(&o.PollIntervalMs, "redis.ss.poll-interval-ms", o.PollIntervalMs, "Poll interval in milliseconds")
-	fs.IntVar(&o.BatchSize, "redis.ss.batch-size", o.BatchSize, "Number of messages to process per poll")
-	fs.StringVar(&o.GateType, "redis.ss.gate-type", o.GateType, "Gate type for single-queue mode (e.g. redis, prometheus-saturation, prometheus-budget)")
-	fs.StringVar(&o.GateParamsJSON, "redis.ss.gate-params", o.GateParamsJSON, "JSON-encoded gate params map for single-queue mode")
+func (c *SortedSetConfig) ApplyDefaults() {
+	if c.ResultQueueName == "" {
+		c.ResultQueueName = "result-list"
+	}
+	if c.PollIntervalMs == 0 {
+		c.PollIntervalMs = 1000
+	}
+	if c.BatchSize == 0 {
+		c.BatchSize = 10
+	}
+	for i := range c.Queues {
+		if c.Queues[i].RequestPathURL == "" {
+			c.Queues[i].RequestPathURL = "/v1/completions"
+		}
+		if c.Queues[i].WorkerPoolID == "" {
+			c.Queues[i].WorkerPoolID = "default"
+		}
+		if c.Queues[i].ID == "" {
+			c.Queues[i].ID = c.Queues[i].QueueName
+		}
+	}
 }
 
-// HasQueueConfig reports whether any multi-queue configuration is set.
-func (o *SortedSetFlowOptions) HasQueueConfig() bool {
-	return o.QueuesConfig != "" || o.QueuesConfigFile != ""
+func (c *SortedSetConfig) Validate() error {
+	if len(c.Queues) == 0 {
+		return fmt.Errorf("at least one queue must be configured")
+	}
+	seenID := make(map[string]bool, len(c.Queues))
+	seenQueue := make(map[string]bool, len(c.Queues))
+	for _, q := range c.Queues {
+		if q.QueueName == "" {
+			return fmt.Errorf("queue_name is required for each queue")
+		}
+		if q.IGWBaseURL == "" {
+			return fmt.Errorf("queue %q: igw_base_url must be specified", q.QueueName)
+		}
+		if seenID[q.ID] {
+			return fmt.Errorf("duplicate queue id %q", q.ID)
+		}
+		seenID[q.ID] = true
+		if seenQueue[q.QueueName] {
+			return fmt.Errorf("duplicate queue_name %q", q.QueueName)
+		}
+		seenQueue[q.QueueName] = true
+	}
+	return nil
 }

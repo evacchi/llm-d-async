@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -20,56 +18,16 @@ import (
 	logutil "sigs.k8s.io/gateway-api-inference-extension/pkg/epp/util/logging"
 )
 
-// parseGateParams parses a JSON-encoded string (from --redis.ss.gate-params)
-// into a map[string]string for gate parameter configuration.
-// Used to pass gate parameters from CLI or YAML to the gate factory.
-func parseGateParams(s string) map[string]string {
-	m := map[string]string{}
-	if s == "" || s == "{}" {
-		return m
-	}
-	_ = json.Unmarshal([]byte(s), &m)
-	return m
-}
-
-// StringMap is a map[string]string that tolerates non-string JSON values
-// by converting them to their string representation during unmarshaling.
-type StringMap map[string]string
-
-func (m *StringMap) UnmarshalJSON(data []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	result := make(map[string]string, len(raw))
-	for k, v := range raw {
-		switch val := v.(type) {
-		case string:
-			result[k] = val
-		case float64:
-			result[k] = strconv.FormatFloat(val, 'f', -1, 64)
-		case bool:
-			result[k] = strconv.FormatBool(val)
-		case nil:
-			result[k] = ""
-		default:
-			return fmt.Errorf("gate_params key %q: unsupported value type %T (only strings, numbers, and booleans are allowed)", k, v)
-		}
-	}
-	*m = result
-	return nil
-}
-
-type queueConfig struct {
-	ID                 string    `json:"id,omitempty"`
-	QueueName          string    `json:"queue_name,omitempty"`
-	ResultQueueName    string    `json:"result_queue_name,omitempty"`
-	WorkerPoolID       string    `json:"worker_pool_id"`
-	InferenceObjective string    `json:"inference_objective"`
-	RequestPathURL     string    `json:"request_path_url"`
-	IGWBaseURL         string    `json:"igw_base_url"`
-	GateType           string    `json:"gate_type"`
-	GateParams         StringMap `json:"gate_params,omitempty"`
+// SortedSetQueueConfig defines a single queue entry in the sorted-set transport config.
+type SortedSetQueueConfig struct {
+	ID                 string `json:"id,omitempty"`
+	QueueName          string `json:"queue_name,omitempty"`
+	ResultQueueName    string `json:"result_queue_name,omitempty"`
+	WorkerPoolID       string `json:"worker_pool_id"`
+	InferenceObjective string `json:"inference_objective"`
+	RequestPathURL     string `json:"request_path_url"`
+	IGWBaseURL         string `json:"igw_base_url"`
+	pipeline.GateConfig
 }
 
 type requestChannelData struct {
@@ -94,7 +52,7 @@ type RedisSortedSetFlow struct {
 	activeReleases          sync.Map
 	gate                    pipeline.Gate
 	gateFactory             pipeline.GateFactory
-	configMap               map[string]queueConfig
+	configMap               map[string]SortedSetQueueConfig
 	defaultRequestQueueName string
 	defaultResultQueueName  string
 	workerPools             []pipeline.WorkerPoolConfig
@@ -105,53 +63,22 @@ type RedisSortedSetFlow struct {
 	enableTracing           bool
 }
 
-// SortedSetOption is a functional option for configuring RedisSortedSetFlow
-type SortedSetOption func(*RedisSortedSetFlow)
-
-// WithGateFactory sets a GateFactory for per-queue gate instantiation.
-// When set, gates are created per queue from config, overriding any global gate.
-func WithGateFactory(factory pipeline.GateFactory) SortedSetOption {
-	return func(r *RedisSortedSetFlow) {
-		r.gateFactory = factory
-	}
-}
-
-// WithSortedSetRedisTracing enables per-command Redis tracing spans via redisotel.
-func WithSortedSetRedisTracing(enable bool) SortedSetOption {
-	return func(r *RedisSortedSetFlow) {
-		r.enableTracing = enable
-	}
-}
-
-// WithSortedSetWorkerPools sets the pool configurations to resolve named pools.
-func WithSortedSetWorkerPools(workerPools []pipeline.WorkerPoolConfig) SortedSetOption {
-	return func(r *RedisSortedSetFlow) {
-		r.workerPools = workerPools
-	}
-}
-
-func NewRedisSortedSetFlow(flowOpts SortedSetFlowOptions, connOpts ConnectionOptions, fns ...SortedSetOption) (*RedisSortedSetFlow, error) {
-	configs, err := loadQueueConfigs(flowOpts)
-	if err != nil {
-		return nil, err
-	}
-	redisOpts, err := ParseRedisOptions(connOpts.URL)
+func NewRedisSortedSetFlow(cfg SortedSetConfig, workerPools []pipeline.WorkerPoolConfig, gateFactory pipeline.GateFactory) (*RedisSortedSetFlow, error) {
+	redisOpts, err := ParseRedisOptions(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid Redis connection config: %w", err)
 	}
 	r := &RedisSortedSetFlow{
-		rdb:                     redis.NewClient(redisOpts),
-		requestChannels:         make([]requestChannelData, 0, len(configs)),
-		retryChannel:            make(chan pipeline.RetryMessage),
-		resultChannel:           make(chan api.ResultMessage, resultChannelBuffer),
-		pollInterval:            time.Duration(flowOpts.PollIntervalMs) * time.Millisecond,
-		batchSize:               flowOpts.BatchSize,
-		defaultRequestQueueName: flowOpts.RequestQueueName,
-		defaultResultQueueName:  flowOpts.ResultQueueName,
-	}
-
-	for _, fn := range fns {
-		fn(r)
+		rdb:                    redis.NewClient(redisOpts),
+		requestChannels:        make([]requestChannelData, 0, len(cfg.Queues)),
+		retryChannel:           make(chan pipeline.RetryMessage),
+		resultChannel:          make(chan api.ResultMessage, resultChannelBuffer),
+		pollInterval:           time.Duration(cfg.PollIntervalMs) * time.Millisecond,
+		batchSize:              cfg.BatchSize,
+		defaultResultQueueName: cfg.ResultQueueName,
+		workerPools:            workerPools,
+		gateFactory:            gateFactory,
+		enableTracing:          cfg.EnableTracing,
 	}
 
 	if r.enableTracing {
@@ -161,13 +88,13 @@ func NewRedisSortedSetFlow(flowOpts SortedSetFlowOptions, connOpts ConnectionOpt
 		}
 	}
 
-	r.configMap = make(map[string]queueConfig, len(configs))
-	for _, cfg := range configs {
+	r.configMap = make(map[string]SortedSetQueueConfig, len(cfg.Queues))
+	for _, qcfg := range cfg.Queues {
 		var gate pipeline.Gate
-		if r.gateFactory != nil && cfg.GateType != "" {
-			gate, err = r.gateFactory.CreateGate(cfg.GateType, cfg.GateParams)
+		if r.gateFactory != nil && qcfg.GateType != "" {
+			gate, err = r.gateFactory.CreateGate(qcfg.GateConfig)
 			if err != nil {
-				return nil, fmt.Errorf("failed to create gate for queue %q (gate_type=%q): %w", cfg.QueueName, cfg.GateType, err)
+				return nil, fmt.Errorf("failed to create gate for queue %q (gate_type=%q): %w", qcfg.QueueName, qcfg.GateType, err)
 			}
 		} else if r.gate != nil {
 			gate = r.gate
@@ -175,45 +102,31 @@ func NewRedisSortedSetFlow(flowOpts SortedSetFlowOptions, connOpts ConnectionOpt
 			gate = pipeline.ConstOpenGate()
 		}
 
-		workerPoolID := cfg.WorkerPoolID
-		if workerPoolID == "" {
-			workerPoolID = "default"
-		}
-
 		found := false
 		for _, pool := range r.workerPools {
-			if pool.ID == workerPoolID {
+			if pool.ID == qcfg.WorkerPoolID {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("worker pool %q specified in queue config not found in pool configuration", workerPoolID)
-		}
-
-		if cfg.IGWBaseURL == "" {
-			return nil, fmt.Errorf("queue config for queue %q: igw_base_url must be specified", cfg.QueueName)
-		}
-
-		reqPath := cfg.RequestPathURL
-		if reqPath == "" {
-			reqPath = "/v1/completions"
+			return nil, fmt.Errorf("worker pool %q specified in queue config not found in pool configuration", qcfg.WorkerPoolID)
 		}
 
 		ch := pipeline.RequestChannel{
 			Channel:            make(chan *api.InternalRequest),
-			InferenceObjective: cfg.InferenceObjective,
-			RequestPathURL:     reqPath,
-			IGWBaseURL:         cfg.IGWBaseURL,
+			InferenceObjective: qcfg.InferenceObjective,
+			RequestPathURL:     qcfg.RequestPathURL,
+			IGWBaseURL:         qcfg.IGWBaseURL,
 			Gate:               gate,
-			WorkerPoolID:       workerPoolID,
+			WorkerPoolID:       qcfg.WorkerPoolID,
 		}
 
-		r.configMap[cfg.ID] = cfg
+		r.configMap[qcfg.ID] = qcfg
 		r.requestChannels = append(r.requestChannels, requestChannelData{
 			channel:   ch,
-			queueName: cfg.QueueName,
-			queueID:   cfg.ID,
+			queueName: qcfg.QueueName,
+			queueID:   qcfg.ID,
 			gate:      gate,
 		})
 	}
@@ -223,64 +136,6 @@ func NewRedisSortedSetFlow(flowOpts SortedSetFlowOptions, connOpts ConnectionOpt
 	}
 
 	return r, nil
-}
-
-func parseQueueConfigs(data []byte) ([]queueConfig, error) {
-	var configs []queueConfig
-	if err := json.Unmarshal(data, &configs); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal queues config: %w", err)
-	}
-	return configs, nil
-}
-
-func loadQueueConfigs(opts SortedSetFlowOptions) ([]queueConfig, error) {
-	var configs []queueConfig
-	if opts.QueuesConfig != "" {
-		var err error
-		configs, err = parseQueueConfigs([]byte(opts.QueuesConfig))
-		if err != nil {
-			return nil, err
-		}
-	} else if opts.QueuesConfigFile != "" {
-		data, err := os.ReadFile(opts.QueuesConfigFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
-		}
-		configs, err = parseQueueConfigs(data)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		configs = []queueConfig{{
-			QueueName:          opts.RequestQueueName,
-			InferenceObjective: opts.InferenceObjective,
-			IGWBaseURL:         opts.IGWBaseURL,
-			RequestPathURL:     opts.RequestPathURL,
-			GateType:           opts.GateType,
-			GateParams:         parseGateParams(opts.GateParamsJSON),
-			WorkerPoolID:       "default",
-		}}
-	}
-	seenID := make(map[string]bool, len(configs))
-	seenQueue := make(map[string]bool, len(configs))
-	for i := range configs {
-		applyQueueConfigDefaults(&configs[i])
-		if seenID[configs[i].ID] {
-			return nil, fmt.Errorf("duplicate queue id %q", configs[i].ID)
-		}
-		seenID[configs[i].ID] = true
-		if seenQueue[configs[i].QueueName] {
-			return nil, fmt.Errorf("duplicate queue_name %q", configs[i].QueueName)
-		}
-		seenQueue[configs[i].QueueName] = true
-	}
-	return configs, nil
-}
-
-func applyQueueConfigDefaults(cfg *queueConfig) {
-	if cfg.ID == "" {
-		cfg.ID = cfg.QueueName
-	}
 }
 
 func (r *RedisSortedSetFlow) Start(ctx context.Context) {

@@ -95,12 +95,17 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 
 	gateFactory = flowcontrol.NewGateFactoryWithCacheTTL(opts.Prometheus.URL, opts.Prometheus.CacheTTL)
 
-	policy, err := loadRequestMergePolicy(opts.Queue.MergePolicy)
+	policy, err := loadRequestMergePolicy(opts.Transport.MergePolicy)
 	if err != nil {
 		return err
 	}
 
-	flow, err := loadFlow(opts, gateFactory, poolsMap)
+	configBytes, err := loadTransportConfigBytes(opts.Transport)
+	if err != nil {
+		return err
+	}
+
+	flow, err := loadFlow(opts, configBytes, gateFactory, poolsMap)
 	if err != nil {
 		return err
 	}
@@ -126,6 +131,7 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 		return err
 	}
 
+	var drainCtx context.Context
 	drainCtx, drainCancel := context.WithCancel(baseCtx)
 	defer drainCancel()
 
@@ -149,10 +155,10 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 	flow.Start(ctx)
 	healthServer.SetReady()
 
-	if reporter, ok := flow.(pipeline.BacklogReporter); ok && opts.Queue.BacklogPollInterval > 0 {
-		go pollBacklog(ctx, reporter, opts.Queue.BacklogPollInterval)
+	if reporter, ok := flow.(pipeline.BacklogReporter); ok && opts.Transport.BacklogPollInterval > 0 {
+		go pollBacklog(ctx, reporter, opts.Transport.BacklogPollInterval)
 	} else if !ok {
-		setupLog.Info("Selected flow does not support broker backlog metrics", "message-queue-impl", opts.Queue.Impl)
+		setupLog.Info("Selected flow does not support broker backlog metrics", "transport", opts.Transport.Type)
 	}
 
 	<-ctx.Done()
@@ -188,20 +194,15 @@ func initTracer(baseCtx context.Context) (func(context.Context) error, error) {
 }
 
 func loadWorkerPools(workerConfig WorkerConfig, setupLog logr.Logger) (poolsMap map[string]pipeline.WorkerPoolConfig, totalConcurrency int, err error) {
-	var pools []pipeline.WorkerPoolConfig
-	if workerConfig.PoolConfigFile != "" {
-		pools, err = pipeline.LoadWorkerPools(workerConfig.PoolConfigFile)
-		if err != nil {
-			return nil, -1, err
-		}
-		setupLog.Info("Loaded named pools config", "count", len(pools))
-	} else {
-		pools = []pipeline.WorkerPoolConfig{{
-			ID:      "default",
-			Workers: workerConfig.Concurrency,
-		}}
-		setupLog.Info("No queue/pool configs set. Created default pool", "workers", workerConfig.Concurrency)
+	poolData, err := loadPoolConfigBytes(workerConfig)
+	if err != nil {
+		return nil, -1, err
 	}
+	pools, err := pipeline.LoadWorkerPools(poolData)
+	if err != nil {
+		return nil, -1, err
+	}
+	setupLog.Info("Loaded worker pools", "count", len(pools))
 
 	poolsMap = make(map[string]pipeline.WorkerPoolConfig)
 	for _, p := range pools {
@@ -211,8 +212,7 @@ func loadWorkerPools(workerConfig WorkerConfig, setupLog logr.Logger) (poolsMap 
 		poolsMap[p.ID] = p
 		totalConcurrency += p.Workers
 	}
-	return poolsMap, totalConcurrency, err
-
+	return poolsMap, totalConcurrency, nil
 }
 
 func loadRequestMergePolicy(name string) (pipeline.RequestMergePolicy, error) {
@@ -224,22 +224,32 @@ func loadRequestMergePolicy(name string) (pipeline.RequestMergePolicy, error) {
 	}
 }
 
-func loadFlow(opts *Options, gateFactory *flowcontrol.GateFactory, poolsMap map[string]pipeline.WorkerPoolConfig) (pipeline.Flow, error) {
+func loadFlow(opts *Options, configBytes []byte, gateFactory *flowcontrol.GateFactory, poolsMap map[string]pipeline.WorkerPoolConfig) (pipeline.Flow, error) {
 	workerPools := make([]pipeline.WorkerPoolConfig, 0, len(poolsMap))
 	for _, p := range poolsMap {
 		workerPools = append(workerPools, p)
 	}
-	switch opts.Queue.Impl {
+	switch opts.Transport.Type {
 	case "redis-pubsub":
-		return redis.NewRedisMQFlow(opts.Redis, opts.RedisConnection, redis.WithRedisTracing(opts.Observability.RedisTracing), redis.WithWorkerPools(workerPools))
+		cfg, err := redis.LoadPubSubConfig(configBytes)
+		if err != nil {
+			return nil, err
+		}
+		return redis.NewRedisMQFlow(*cfg, workerPools)
 	case "redis-sortedset":
-		return redis.NewRedisSortedSetFlow(opts.RedisSortedSet, opts.RedisConnection, redis.WithGateFactory(gateFactory), redis.WithSortedSetRedisTracing(opts.Observability.RedisTracing), redis.WithSortedSetWorkerPools(workerPools))
+		cfg, err := redis.LoadSortedSetConfig(configBytes)
+		if err != nil {
+			return nil, err
+		}
+		return redis.NewRedisSortedSetFlow(*cfg, workerPools, gateFactory)
 	case "gcp-pubsub":
-		return pubsub.NewGCPPubSubMQFlow(opts.PubSub, pubsub.WithWorkerPools(workerPools))
-	case "gcp-pubsub-gated":
-		return pubsub.NewGCPPubSubMQFlow(opts.PubSub, pubsub.WithGateFactory(gateFactory), pubsub.WithWorkerPools(workerPools))
+		cfg, err := pubsub.LoadConfig(configBytes)
+		if err != nil {
+			return nil, err
+		}
+		return pubsub.NewGCPPubSubMQFlow(*cfg, workerPools, gateFactory)
 	default:
-		return nil, fmt.Errorf("unknown message queue implementation: %s", opts.Queue.Impl)
+		return nil, fmt.Errorf("unknown transport: %s", opts.Transport.Type)
 	}
 }
 
@@ -387,7 +397,7 @@ func pollBacklog(ctx context.Context, reporter pipeline.BacklogReporter, interva
 }
 
 var sensitiveFlags = map[string]bool{
-	"redis.url": true,
+	"transport-config": true,
 }
 
 func printAllFlags(setupLog logr.Logger) {

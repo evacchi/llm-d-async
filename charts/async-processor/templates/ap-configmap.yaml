@@ -1,4 +1,4 @@
-{{- if or .Values.ap.workerPools .Values.ap.gcpPubSub.topicsConfig .Values.ap.transformConfig }}
+{{- if or .Values.ap.transportConfig .Values.ap.workerPools .Values.ap.transformConfig }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,11 +7,11 @@ metadata:
   labels:
     {{- include "async-processor.labels" . | nindent 4 }}
 data:
+  {{- if .Values.ap.transportConfig }}
+  transport.json: {{ .Values.ap.transportConfig | toJson | quote }}
+  {{- end }}
   {{- if .Values.ap.workerPools }}
   worker-pools.json: {{ .Values.ap.workerPools | toJson | quote }}
-  {{- end }}
-  {{- if .Values.ap.gcpPubSub.topicsConfig }}
-  pubsub-topics.json: {{ .Values.ap.gcpPubSub.topicsConfig | toJson | quote }}
   {{- end }}
   {{- if .Values.ap.transformConfig }}
   transform-config.json: {{ .Values.ap.transformConfig | toJson | quote }}

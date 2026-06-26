@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"sync"
 	"time"
 
@@ -29,13 +28,12 @@ var resultChannels sync.Map
 const quotaExceededNackDelay = 10 * time.Second
 
 type TopicConfig struct {
-	SubscriberID       string            `json:"subscriber_id"`
-	WorkerPoolID       string            `json:"worker_pool_id"`
-	InferenceObjective string            `json:"inference_objective"`
-	RequestPathURL     string            `json:"request_path_url"`
-	IGWBaseURL         string            `json:"igw_base_url"`
-	GateType           string            `json:"gate_type"`
-	GateParams         map[string]string `json:"gate_params,omitempty"`
+	SubscriberID       string `json:"subscriber_id"`
+	WorkerPoolID       string `json:"worker_pool_id"`
+	InferenceObjective string `json:"inference_objective"`
+	RequestPathURL     string `json:"request_path_url"`
+	IGWBaseURL         string `json:"igw_base_url"`
+	pipeline.GateConfig
 }
 
 var _ pipeline.Flow = (*PubSubMQFlow)(nil)
@@ -62,58 +60,23 @@ type RequestChannelData struct {
 	gate           pipeline.Gate
 }
 
-// PubSubOption is a functional option for configuring PubSubMQFlow
-type PubSubOption func(*PubSubMQFlow)
-
-// WithGateFactory sets a GateFactory for per-topic gate instantiation.
-// When set, gates are created per topic from config, overriding any global gate.
-func WithGateFactory(factory pipeline.GateFactory) PubSubOption {
-	return func(p *PubSubMQFlow) {
-		p.gateFactory = factory
-	}
-}
-
-// WithWorkerPools sets the pool configurations to resolve named pools.
-func WithWorkerPools(workerPools []pipeline.WorkerPoolConfig) PubSubOption {
-	return func(p *PubSubMQFlow) {
-		p.workerPools = workerPools
-	}
-}
-
-func NewGCPPubSubMQFlow(pubsubOpts Options, fns ...PubSubOption) (*PubSubMQFlow, error) {
-
+func NewGCPPubSubMQFlow(cfg Config, workerPools []pipeline.WorkerPoolConfig, gateFactory pipeline.GateFactory) (*PubSubMQFlow, error) {
 	ctx := context.Background()
 	var err error
-	pubSubClient, err = pubsub.NewClient(ctx, pubsubOpts.ProjectID)
+	pubSubClient, err = pubsub.NewClient(ctx, cfg.ProjectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create PubSub client: %w", err)
 	}
-	var configs []TopicConfig
-	if pubsubOpts.TopicsConfigFile != "" {
-		data, err := os.ReadFile(pubsubOpts.TopicsConfigFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read topics config file: %w", err)
-		}
 
-		if err := json.Unmarshal(data, &configs); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal topics config: %w", err)
-		}
-	} else {
-		configs = []TopicConfig{{
-			SubscriberID:       pubsubOpts.RequestSubscriberID,
-			WorkerPoolID:       "default",
-			InferenceObjective: pubsubOpts.InferenceObjective,
-			IGWBaseURL:         pubsubOpts.IGWBaseURL,
-			RequestPathURL:     pubsubOpts.RequestPathURL,
-		}}
-	}
 	p := &PubSubMQFlow{
-		resultTopicID:   pubsubOpts.ResultTopicID,
-		requestChannels: make([]RequestChannelData, 0, len(configs)),
+		resultTopicID:   cfg.ResultTopicID,
+		requestChannels: make([]RequestChannelData, 0, len(cfg.Topics)),
 		retryChannel:    make(chan pipeline.RetryMessage),
 		resultChannel:   make(chan api.ResultMessage),
-		batchSize:       pubsubOpts.BatchSize,
-		projectID:       pubsubOpts.ProjectID,
+		batchSize:       cfg.BatchSize,
+		projectID:       cfg.ProjectID,
+		workerPools:     workerPools,
+		gateFactory:     gateFactory,
 	}
 
 	if metricClient, mErr := monitoring.NewMetricClient(ctx); mErr != nil {
@@ -122,50 +85,27 @@ func NewGCPPubSubMQFlow(pubsubOpts Options, fns ...PubSubOption) (*PubSubMQFlow,
 		p.metricClient = metricClient
 	}
 
-	for _, fn := range fns {
-		fn(p)
-	}
-
-	// Create per-topic channels with gates
-	for _, cfg := range configs {
-		workerPoolID := cfg.WorkerPoolID
-		if workerPoolID == "" {
-			workerPoolID = "default"
-		}
-
+	for _, tcfg := range cfg.Topics {
 		found := false
 		for _, pool := range p.workerPools {
-			if pool.ID == workerPoolID {
+			if pool.ID == tcfg.WorkerPoolID {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("worker pool %q specified in topic config not found in pool configuration", workerPoolID)
+			return nil, fmt.Errorf("worker pool %q specified in topic config not found in pool configuration", tcfg.WorkerPoolID)
 		}
 
-		if cfg.IGWBaseURL == "" {
-			return nil, fmt.Errorf("topic config for subscriber %q: igw_base_url must be specified", cfg.SubscriberID)
-		}
-
-		reqPath := cfg.RequestPathURL
-		if reqPath == "" {
-			reqPath = "/v1/completions"
-		}
-
-		// Determine gate for this topic
 		var gate pipeline.Gate
-		if p.gateFactory != nil && cfg.GateType != "" {
-			// Use factory to create per-topic gate
-			gate, err = p.gateFactory.CreateGate(cfg.GateType, cfg.GateParams)
+		if p.gateFactory != nil && tcfg.GateType != "" {
+			gate, err = p.gateFactory.CreateGate(tcfg.GateConfig)
 			if err != nil {
-				return nil, fmt.Errorf("failed to create gate for topic subscriber %q (gate_type=%q): %w", cfg.SubscriberID, cfg.GateType, err)
+				return nil, fmt.Errorf("failed to create gate for topic subscriber %q (gate_type=%q): %w", tcfg.SubscriberID, tcfg.GateType, err)
 			}
 		} else if p.gate != nil {
-			// Fall back to global gate if provided
 			gate = p.gate
 		} else {
-			// Default to always-open gate
 			gate = pipeline.ConstOpenGate()
 		}
 
@@ -173,18 +113,17 @@ func NewGCPPubSubMQFlow(pubsubOpts Options, fns ...PubSubOption) (*PubSubMQFlow,
 		p.requestChannels = append(p.requestChannels, RequestChannelData{
 			requestChannel: pipeline.RequestChannel{
 				Channel:            ch,
-				IGWBaseURL:         cfg.IGWBaseURL,
-				InferenceObjective: cfg.InferenceObjective,
-				RequestPathURL:     reqPath,
+				IGWBaseURL:         tcfg.IGWBaseURL,
+				InferenceObjective: tcfg.InferenceObjective,
+				RequestPathURL:     tcfg.RequestPathURL,
 				Gate:               gate,
-				WorkerPoolID:       workerPoolID,
+				WorkerPoolID:       tcfg.WorkerPoolID,
 			},
-			subscriberID: cfg.SubscriberID,
+			subscriberID: tcfg.SubscriberID,
 			gate:         gate,
 		})
 	}
 
-	// Set default gate if not already set
 	if p.gate == nil {
 		p.gate = pipeline.ConstOpenGate()
 	}

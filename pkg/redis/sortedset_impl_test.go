@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math"
 	"strconv"
 	"sync"
@@ -37,37 +36,37 @@ func envelopeJSON(rm api.RequestMessage) string {
 	return string(b)
 }
 
-func TestParseQueueConfigs(t *testing.T) {
+func TestParseSortedSetQueueConfigs(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		wantLen  int
 		wantErr  bool
-		validate func(t *testing.T, configs []queueConfig)
+		validate func(t *testing.T, configs []SortedSetQueueConfig)
 	}{
 		{
 			name:    "single queue with string gate params",
 			input:   `[{"queue_name":"q1","igw_base_url":"http://gw","gate_type":"redis","gate_params":{"address":"localhost:6379"}}]`,
 			wantLen: 1,
-			validate: func(t *testing.T, configs []queueConfig) {
+			validate: func(t *testing.T, configs []SortedSetQueueConfig) {
 				if configs[0].QueueName != "q1" {
 					t.Errorf("expected q1, got %s", configs[0].QueueName)
 				}
 				if configs[0].GateParams["address"] != "localhost:6379" {
-					t.Errorf("expected localhost:6379, got %s", configs[0].GateParams["address"])
+					t.Errorf("expected localhost:6379, got %v", configs[0].GateParams["address"])
 				}
 			},
 		},
 		{
-			name:    "numeric gate params coerced to strings",
+			name:    "numeric gate params preserved as native types",
 			input:   `[{"queue_name":"q1","igw_base_url":"http://gw","gate_type":"prometheus-saturation","gate_params":{"threshold":0.7,"pool":"p1"}}]`,
 			wantLen: 1,
-			validate: func(t *testing.T, configs []queueConfig) {
-				if configs[0].GateParams["threshold"] != "0.7" {
-					t.Errorf("expected '0.7', got '%s'", configs[0].GateParams["threshold"])
+			validate: func(t *testing.T, configs []SortedSetQueueConfig) {
+				if configs[0].GateParams["threshold"] != 0.7 {
+					t.Errorf("expected 0.7, got '%v'", configs[0].GateParams["threshold"])
 				}
 				if configs[0].GateParams["pool"] != "p1" {
-					t.Errorf("expected 'p1', got '%s'", configs[0].GateParams["pool"])
+					t.Errorf("expected 'p1', got '%v'", configs[0].GateParams["pool"])
 				}
 			},
 		},
@@ -75,7 +74,7 @@ func TestParseQueueConfigs(t *testing.T) {
 			name:    "multiple queues",
 			input:   `[{"queue_name":"q1","igw_base_url":"http://igw:80"},{"queue_name":"q2","igw_base_url":"http://gw","gate_type":"redis","gate_params":{"address":"redis:6379"}}]`,
 			wantLen: 2,
-			validate: func(t *testing.T, configs []queueConfig) {
+			validate: func(t *testing.T, configs []SortedSetQueueConfig) {
 				if configs[0].QueueName != "q1" {
 					t.Errorf("expected q1, got %s", configs[0].QueueName)
 				}
@@ -88,7 +87,7 @@ func TestParseQueueConfigs(t *testing.T) {
 			name:    "no gate params",
 			input:   `[{"queue_name":"q1","igw_base_url":"http://gw","request_path_url":"/v1/completions"}]`,
 			wantLen: 1,
-			validate: func(t *testing.T, configs []queueConfig) {
+			validate: func(t *testing.T, configs []SortedSetQueueConfig) {
 				if len(configs[0].GateParams) != 0 {
 					t.Errorf("expected empty gate params, got %v", configs[0].GateParams)
 				}
@@ -103,9 +102,10 @@ func TestParseQueueConfigs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			configs, err := parseQueueConfigs([]byte(tt.input))
+			var configs []SortedSetQueueConfig
+			err := json.Unmarshal([]byte(tt.input), &configs)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("parseQueueConfigs() error = %v, wantErr = %v", err, tt.wantErr)
+				t.Fatalf("json.Unmarshal() error = %v, wantErr = %v", err, tt.wantErr)
 			}
 			if tt.wantErr {
 				return
@@ -115,77 +115,6 @@ func TestParseQueueConfigs(t *testing.T) {
 			}
 			if tt.validate != nil {
 				tt.validate(t, configs)
-			}
-		})
-	}
-}
-
-func TestStringMapUnmarshal(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected map[string]string
-	}{
-		{
-			name:     "string values",
-			input:    `{"key":"value"}`,
-			expected: map[string]string{"key": "value"},
-		},
-		{
-			name:     "numeric float",
-			input:    `{"threshold":0.7}`,
-			expected: map[string]string{"threshold": "0.7"},
-		},
-		{
-			name:     "integer",
-			input:    `{"limit":5}`,
-			expected: map[string]string{"limit": "5"},
-		},
-		{
-			name:     "boolean",
-			input:    `{"enabled":true}`,
-			expected: map[string]string{"enabled": "true"},
-		},
-		{
-			name:     "mixed types",
-			input:    `{"pool":"p1","threshold":0.8,"limit":100,"active":true}`,
-			expected: map[string]string{"pool": "p1", "threshold": "0.8", "limit": "100", "active": "true"},
-		},
-		{
-			name:     "null becomes empty string",
-			input:    `{"key":null}`,
-			expected: map[string]string{"key": ""},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var m StringMap
-			if err := json.Unmarshal([]byte(tt.input), &m); err != nil {
-				t.Fatalf("unmarshal error: %v", err)
-			}
-			for k, want := range tt.expected {
-				if got := m[k]; got != want {
-					t.Errorf("key %q: expected %q, got %q", k, want, got)
-				}
-			}
-		})
-	}
-}
-
-func TestStringMapRejectsNonScalar(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"nested object", `{"key":{"nested":"value"}}`},
-		{"array", `{"key":[1,2,3]}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var m StringMap
-			if err := json.Unmarshal([]byte(tt.input), &m); err == nil {
-				t.Error("expected error for non-scalar value, got nil")
 			}
 		})
 	}
@@ -518,7 +447,7 @@ func TestSortedSetFlow_ResultBatchMultiQueue(t *testing.T) {
 		batchSize:              10,
 		gate:                   noopGate(),
 		defaultResultQueueName: defaultQueue,
-		configMap: map[string]queueConfig{
+		configMap: map[string]SortedSetQueueConfig{
 			"queue-a": {ID: "queue-a", QueueName: "request:queue-a", ResultQueueName: "result:queue-a"},
 			"queue-b": {ID: "queue-b", QueueName: "request:queue-b", ResultQueueName: "result:queue-b"},
 		},
@@ -648,16 +577,20 @@ func TestSortedSetFlow_Integration(t *testing.T) {
 
 	queue := "integration-queue"
 
-	flowOpts := SortedSetFlowOptions{
-		RequestQueueName: queue,
-		IGWBaseURL:       "http://gw",
-		ResultQueueName:  "result-list",
-		PollIntervalMs:   1000,
-		BatchSize:        10,
-		GateParamsJSON:   "{}",
+	cfg := SortedSetConfig{
+		URL:             "redis://" + s.Addr(),
+		ResultQueueName: "result-list",
+		PollIntervalMs:  1000,
+		BatchSize:       10,
+		Queues: []SortedSetQueueConfig{{
+			QueueName:          queue,
+			WorkerPoolID:       "default",
+			IGWBaseURL:         "http://gw",
+			InferenceObjective: "obj",
+		}},
 	}
-	connOpts := ConnectionOptions{URL: "redis://" + s.Addr()}
-	flow, err := NewRedisSortedSetFlow(flowOpts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "default", Workers: 1}}))
+	cfg.ApplyDefaults()
+	flow, err := NewRedisSortedSetFlow(cfg, []pipeline.WorkerPoolConfig{{ID: "default", Workers: 1}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1034,104 +967,80 @@ func TestSortedSetFlow_RequestWorkerRequeuesOnShutdown(t *testing.T) {
 	}
 }
 
-func TestApplyQueueConfigDefaults_IDPreserved(t *testing.T) {
-	cfg := queueConfig{ID: "my-id", QueueName: "my-queue", ResultQueueName: "my-result"}
-	applyQueueConfigDefaults(&cfg)
+func TestSortedSetConfigApplyDefaults_IDPreserved(t *testing.T) {
+	cfg := SortedSetConfig{
+		Queues: []SortedSetQueueConfig{{ID: "my-id", QueueName: "my-queue", ResultQueueName: "my-result"}},
+	}
+	cfg.ApplyDefaults()
 
-	if cfg.ID != "my-id" {
-		t.Errorf("Expected ID 'my-id', got %q", cfg.ID)
+	q := cfg.Queues[0]
+	if q.ID != "my-id" {
+		t.Errorf("Expected ID 'my-id', got %q", q.ID)
 	}
-	if cfg.QueueName != "my-queue" {
-		t.Errorf("Expected QueueName 'my-queue', got %q", cfg.QueueName)
+	if q.QueueName != "my-queue" {
+		t.Errorf("Expected QueueName 'my-queue', got %q", q.QueueName)
 	}
-	if cfg.ResultQueueName != "my-result" {
-		t.Errorf("Expected ResultQueueName 'my-result', got %q", cfg.ResultQueueName)
+	if q.ResultQueueName != "my-result" {
+		t.Errorf("Expected ResultQueueName 'my-result', got %q", q.ResultQueueName)
 	}
 }
 
-func TestApplyQueueConfigDefaults_IDInferredFromQueueName(t *testing.T) {
-	cfg := queueConfig{QueueName: "my-request-sortedset"}
-	applyQueueConfigDefaults(&cfg)
+func TestSortedSetConfigApplyDefaults_IDInferredFromQueueName(t *testing.T) {
+	cfg := SortedSetConfig{
+		Queues: []SortedSetQueueConfig{{QueueName: "my-request-sortedset"}},
+	}
+	cfg.ApplyDefaults()
 
-	if cfg.ID != "my-request-sortedset" {
-		t.Errorf("Expected ID inferred as 'my-request-sortedset', got %q", cfg.ID)
+	q := cfg.Queues[0]
+	if q.ID != "my-request-sortedset" {
+		t.Errorf("Expected ID inferred as 'my-request-sortedset', got %q", q.ID)
 	}
-	if cfg.QueueName != "my-request-sortedset" {
-		t.Errorf("Expected QueueName unchanged, got %q", cfg.QueueName)
+	if q.QueueName != "my-request-sortedset" {
+		t.Errorf("Expected QueueName unchanged, got %q", q.QueueName)
 	}
-	if cfg.ResultQueueName != "" {
-		t.Errorf("Expected empty ResultQueueName, got %q", cfg.ResultQueueName)
+	if q.ResultQueueName != "" {
+		t.Errorf("Expected empty ResultQueueName, got %q", q.ResultQueueName)
 	}
 }
 
-func TestLoadQueueConfigs_DuplicateIDError(t *testing.T) {
-	input := `[{"id":"same","igw_base_url":"http://a"},{"id":"same","igw_base_url":"http://b"}]`
-	_, err := parseQueueConfigs([]byte(input))
-	if err != nil {
-		t.Fatalf("parseQueueConfigs should succeed: %v", err)
+func TestSortedSetConfigValidate_DuplicateIDError(t *testing.T) {
+	cfg := SortedSetConfig{
+		Queues: []SortedSetQueueConfig{
+			{ID: "same", QueueName: "q1", IGWBaseURL: "http://a"},
+			{ID: "same", QueueName: "q2", IGWBaseURL: "http://b"},
+		},
 	}
-
-	configs := []queueConfig{
-		{ID: "same", QueueName: "q1"},
-		{ID: "same", QueueName: "q2"},
-	}
-	seen := make(map[string]bool, len(configs))
-	var dupErr error
-	for i := range configs {
-		applyQueueConfigDefaults(&configs[i])
-		if seen[configs[i].ID] {
-			dupErr = fmt.Errorf("duplicate queue id %q", configs[i].ID)
-			break
-		}
-		seen[configs[i].ID] = true
-	}
-	if dupErr == nil {
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
 		t.Fatal("Expected duplicate ID error, got nil")
 	}
 }
 
-func TestLoadQueueConfigs_InferredDuplicateIDError(t *testing.T) {
-	configs := []queueConfig{
-		{QueueName: "same-queue"},
-		{QueueName: "same-queue"},
+func TestSortedSetConfigValidate_InferredDuplicateIDError(t *testing.T) {
+	cfg := SortedSetConfig{
+		Queues: []SortedSetQueueConfig{
+			{QueueName: "same-queue", IGWBaseURL: "http://a"},
+			{QueueName: "same-queue", IGWBaseURL: "http://b"},
+		},
 	}
-	seen := make(map[string]bool, len(configs))
-	var dupErr error
-	for i := range configs {
-		applyQueueConfigDefaults(&configs[i])
-		if seen[configs[i].ID] {
-			dupErr = fmt.Errorf("duplicate queue id %q", configs[i].ID)
-			break
-		}
-		seen[configs[i].ID] = true
-	}
-	if dupErr == nil {
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
 		t.Fatal("Expected duplicate ID error for inferred IDs, got nil")
 	}
 }
 
-func TestLoadQueueConfigs_DuplicateQueueNameError(t *testing.T) {
-	configs := []queueConfig{
-		{ID: "id-1", QueueName: "same-queue"},
-		{ID: "id-2", QueueName: "same-queue"},
+func TestSortedSetConfigValidate_DuplicateQueueNameError(t *testing.T) {
+	cfg := SortedSetConfig{
+		Queues: []SortedSetQueueConfig{
+			{ID: "id-1", QueueName: "same-queue", IGWBaseURL: "http://a"},
+			{ID: "id-2", QueueName: "same-queue", IGWBaseURL: "http://b"},
+		},
 	}
-	seenID := make(map[string]bool, len(configs))
-	seenQueue := make(map[string]bool, len(configs))
-	var dupErr error
-	for i := range configs {
-		applyQueueConfigDefaults(&configs[i])
-		if seenID[configs[i].ID] {
-			dupErr = fmt.Errorf("duplicate queue id %q", configs[i].ID)
-			break
-		}
-		seenID[configs[i].ID] = true
-		if seenQueue[configs[i].QueueName] {
-			dupErr = fmt.Errorf("duplicate queue_name %q", configs[i].QueueName)
-			break
-		}
-		seenQueue[configs[i].QueueName] = true
-	}
-	if dupErr == nil {
+	cfg.ApplyDefaults()
+	err := cfg.Validate()
+	if err == nil {
 		t.Fatal("Expected duplicate queue_name error, got nil")
 	}
 }
@@ -1190,7 +1099,7 @@ func TestSortedSetFlow_ResultQueueIgnoresMessagePayload(t *testing.T) {
 		batchSize:              10,
 		gate:                   noopGate(),
 		defaultResultQueueName: "global-default",
-		configMap: map[string]queueConfig{
+		configMap: map[string]SortedSetQueueConfig{
 			"my-queue": {ID: "my-queue", ResultQueueName: configResult},
 		},
 	}
@@ -1230,7 +1139,7 @@ func TestSortedSetFlow_ResultQueueFallsBackToMessageLevel(t *testing.T) {
 		batchSize:              10,
 		gate:                   noopGate(),
 		defaultResultQueueName: "global-default",
-		configMap: map[string]queueConfig{
+		configMap: map[string]SortedSetQueueConfig{
 			"no-result-cfg": {ID: "no-result-cfg", QueueName: "req", ResultQueueName: ""},
 		},
 	}
@@ -1265,53 +1174,65 @@ func TestSortedSetFlow_ResultQueueFallsBackToMessageLevel(t *testing.T) {
 func TestNewRedisSortedSetFlow_PoolRequiredAndValidation(t *testing.T) {
 	s := miniredis.RunT(t)
 	defer s.Close()
-	connOpts := ConnectionOptions{URL: "redis://" + s.Addr()}
-	baseOpts := SortedSetFlowOptions{PollIntervalMs: 1000, BatchSize: 10, GateParamsJSON: "{}"}
+	url := "redis://" + s.Addr()
+
+	parseQueues := func(jsonStr string) []SortedSetQueueConfig {
+		var queues []SortedSetQueueConfig
+		if err := json.Unmarshal([]byte(jsonStr), &queues); err != nil {
+			t.Fatalf("Failed to parse queues JSON: %v", err)
+		}
+		return queues
+	}
 
 	// Case 1: worker_pool_id is missing from configuration, and pool "default" does not exist
-	opts := baseOpts
-	opts.QueuesConfig = `[{"queue_name":"test-queue","inference_objective":"obj","igw_base_url":"http://gw"}]`
-	_, err := NewRedisSortedSetFlow(opts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}))
+	cfg := SortedSetConfig{URL: url, PollIntervalMs: 1000, BatchSize: 10,
+		Queues: parseQueues(`[{"queue_name":"test-queue","inference_objective":"obj","igw_base_url":"http://gw"}]`)}
+	cfg.ApplyDefaults()
+	_, err := NewRedisSortedSetFlow(cfg, []pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}, nil)
 	if err == nil {
 		t.Error("Expected error when worker_pool_id is missing and 'default' pool does not exist, got nil")
 	}
 
 	// Case 5: worker_pool_id is missing, but only a single 'default' pool is specified
-	opts = baseOpts
-	opts.QueuesConfig = `[{"queue_name":"test-queue","inference_objective":"obj","igw_base_url":"http://gw"}]`
-	_, err = NewRedisSortedSetFlow(opts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "default", Workers: 1}}))
+	cfg = SortedSetConfig{URL: url, PollIntervalMs: 1000, BatchSize: 10,
+		Queues: parseQueues(`[{"queue_name":"test-queue","inference_objective":"obj","igw_base_url":"http://gw"}]`)}
+	cfg.ApplyDefaults()
+	_, err = NewRedisSortedSetFlow(cfg, []pipeline.WorkerPoolConfig{{ID: "default", Workers: 1}}, nil)
 	if err != nil {
 		t.Errorf("Unexpected error when worker_pool_id is missing but default pool exists: %v", err)
 	}
 
 	// Case 6: worker_pool_id is specified as custom, but only a single 'default' pool is specified
-	opts = baseOpts
-	opts.QueuesConfig = `[{"queue_name":"test-queue","worker_pool_id":"custom-pool","inference_objective":"obj","igw_base_url":"http://gw"}]`
-	_, err = NewRedisSortedSetFlow(opts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "default", Workers: 1}}))
+	cfg = SortedSetConfig{URL: url, PollIntervalMs: 1000, BatchSize: 10,
+		Queues: parseQueues(`[{"queue_name":"test-queue","worker_pool_id":"custom-pool","inference_objective":"obj","igw_base_url":"http://gw"}]`)}
+	cfg.ApplyDefaults()
+	_, err = NewRedisSortedSetFlow(cfg, []pipeline.WorkerPoolConfig{{ID: "default", Workers: 1}}, nil)
 	if err == nil {
 		t.Error("Expected error when worker_pool_id is custom but only default pool exists, got nil")
 	}
 
 	// Case 2: worker_pool_id is specified but pool does not exist
-	opts = baseOpts
-	opts.QueuesConfig = `[{"queue_name":"test-queue","worker_pool_id":"non-existent","inference_objective":"obj","igw_base_url":"http://gw"}]`
-	_, err = NewRedisSortedSetFlow(opts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}))
+	cfg = SortedSetConfig{URL: url, PollIntervalMs: 1000, BatchSize: 10,
+		Queues: parseQueues(`[{"queue_name":"test-queue","worker_pool_id":"non-existent","inference_objective":"obj","igw_base_url":"http://gw"}]`)}
+	cfg.ApplyDefaults()
+	_, err = NewRedisSortedSetFlow(cfg, []pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}, nil)
 	if err == nil {
 		t.Error("Expected error when specified worker_pool_id does not exist, got nil")
 	}
 
 	// Case 3: worker_pool_id specified and pool exists, but igw_base_url is missing
-	opts = baseOpts
-	opts.QueuesConfig = `[{"queue_name":"test-queue","worker_pool_id":"test-pool","inference_objective":"obj"}]`
-	_, err = NewRedisSortedSetFlow(opts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}))
-	if err == nil {
+	cfg = SortedSetConfig{URL: url, PollIntervalMs: 1000, BatchSize: 10,
+		Queues: parseQueues(`[{"queue_name":"test-queue","worker_pool_id":"test-pool","inference_objective":"obj"}]`)}
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(); err == nil {
 		t.Error("Expected error when igw_base_url is missing in queue config, got nil")
 	}
 
 	// Case 4: worker_pool_id and igw_base_url specified and pool exists
-	opts = baseOpts
-	opts.QueuesConfig = `[{"queue_name":"test-queue","worker_pool_id":"test-pool","inference_objective":"obj","igw_base_url":"http://gw"}]`
-	_, err = NewRedisSortedSetFlow(opts, connOpts, WithSortedSetWorkerPools([]pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}))
+	cfg = SortedSetConfig{URL: url, PollIntervalMs: 1000, BatchSize: 10,
+		Queues: parseQueues(`[{"queue_name":"test-queue","worker_pool_id":"test-pool","inference_objective":"obj","igw_base_url":"http://gw"}]`)}
+	cfg.ApplyDefaults()
+	_, err = NewRedisSortedSetFlow(cfg, []pipeline.WorkerPoolConfig{{ID: "test-pool", Workers: 1}}, nil)
 	if err != nil {
 		t.Errorf("Unexpected error when worker_pool_id exists: %v", err)
 	}
